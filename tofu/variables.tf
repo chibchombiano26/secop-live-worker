@@ -42,7 +42,7 @@ variable "cloudflare_zone_id" {
 }
 
 variable "worker_bundle_path" {
-  description = "Built worker bundle (npm run bundle in worker/)"
+  description = "Built worker bundle, relative to tofu/ root (npm run bundle in worker/)"
   type        = string
   default     = "../worker/dist/bundle.js"
 }
