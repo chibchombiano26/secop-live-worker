@@ -6,12 +6,13 @@
   "scripts": {
     "dev": "wrangler dev",
     "build": "tsc -p tsconfig.json",
-    "bundle": "esbuild src/index.ts --bundle --format=esm --platform=neutral --conditions=workerd --outfile=dist/bundle.js --log-level=warning",
+    "bundle": "esbuild src/index.ts --bundle --format=esm --platform=neutral --conditions=workerd --main-fields=module,main --external:cloudflare:workers --outfile=dist/bundle.js --log-level=warning",
     "test": "vitest run",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^1.2.3",
     "@modelcontextprotocol/server": "^2.0.0",
     "zod": "^4.0.0"
   },

@@ -49,3 +49,11 @@ Docker needs: local daemon + published image (auto-published from
 - `GET /scalar`, `GET /openapi.json`, `GET /health` (open)
 - `POST /mcp` (MCP Streamable HTTP, tools: buscar_licitaciones,
   detalle_licitacion, buscar_documentos; API key enforced)
+
+## OAuth (so ChatGPT web can connect)
+
+The Worker is also an OAuth 2.1 authorization server
+(`@cloudflare/workers-oauth-provider`, KV-backed): discovery docs,
+DCR (`/oauth/register`, CIMD supported), `/authorize` (approve with your
+API key as access code), `/oauth/token` (+ refresh). ChatGPT path:
+Plugins → Add custom MCP server → worker URL → OAuth → approve.
