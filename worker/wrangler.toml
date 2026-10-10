@@ -1,0 +1,6 @@
+name = "secop-live-worker"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+[vars]
+CACHE_TTL = "600"

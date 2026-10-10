@@ -1,0 +1,10 @@
+# Copy to dev.auto.tfvars and fill secrets (NEVER commit *.auto.tfvars).
+enable_cloudflare = false # flip to true with a token below
+enable_docker     = true
+
+cloudflare_api_token  = ""
+cloudflare_account_id = ""
+worker_name           = "secop-live-worker"
+
+api_keys          = "cambia-esta-clave"
+socrata_app_token = ""
