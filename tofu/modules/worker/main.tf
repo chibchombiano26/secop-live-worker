@@ -4,11 +4,11 @@ resource "cloudflare_workers_kv_namespace" "oauth" {
 }
 
 resource "cloudflare_workers_script" "this" {
-  account_id         = var.account_id
-  script_name        = var.worker_name
-  content            = file("${path.root}/${var.bundle_path}")
-  main_module        = "bundle.js"
-  compatibility_date = "2026-10-01"
+  account_id          = var.account_id
+  script_name         = var.worker_name
+  content             = file("${path.root}/${var.bundle_path}")
+  main_module         = "bundle.js"
+  compatibility_date  = "2026-10-01"
   compatibility_flags = ["global_fetch_strictly_public"]
 
   bindings = [
