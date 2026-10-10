@@ -20,9 +20,9 @@ resource "cloudflare_workers_script" "this" {
 }
 
 resource "cloudflare_workers_custom_domain" "this" {
-  count       = var.custom_hostname != "" ? 1 : 0
-  account_id  = var.account_id
-  zone_id     = var.zone_id
-  hostname    = var.custom_hostname
-  service     = cloudflare_workers_script.this.script_name
+  count      = var.custom_hostname != "" ? 1 : 0
+  account_id = var.account_id
+  zone_id    = var.zone_id
+  hostname   = var.custom_hostname
+  service    = cloudflare_workers_script.this.script_name
 }
