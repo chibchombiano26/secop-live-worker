@@ -64,21 +64,40 @@ async function authorizePage(req: Request, env: OAuthEnv, err = ""): Promise<Res
   }
   const details = await oauth.describeConsent(authReq);
   const consent = await oauth.beginConsent(authReq);
-  const scopes = details.scope.map((s) => `<li>${esc(s)}</li>`).join("");
-  const html = `<!doctype html><meta charset="utf-8">
-<title>Authorize ${esc(details.clientName)} — SECOP Live</title>
-<h1>Allow ${esc(details.clientName)} to search SECOP?</h1>
-<p>${details.clientDomain ? `Published by <strong>${esc(details.clientDomain)}</strong>.` : "This app registered itself; its name is not verified."}
-Access will be sent to <strong>${esc(details.redirectHost)}</strong>.</p>
-${details.redirectIsLoopback ? "<p><strong>Sends access to an app on your computer.</strong> Continue only if you just started signing in from it.</p>" : ""}
-<p>Scopes requested:</p><ul>${scopes}</ul>
-${err ? `<p style="color:red">${esc(err)}</p>` : ""}
+  const scopes = details.scope.map((s) => `<span class="chip">${esc(s)}</span>`).join("");
+  const html = `<!doctype html><html lang="es"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Autorizar ${esc(details.clientName)} · SECOP Live</title>
+<style>
+:root{--bg:#0b1220;--card:#131c31;--line:#24314f;--txt:#e8eefc;--mut:#93a1c0;--acc:#3b82f6;--acc2:#22c55e;--warn:#f59e0b;--err:#ef4444}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(1200px 600px at 50% -10%,#1a2b52 0%,var(--bg) 60%);color:var(--txt);font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:24px}
+.card{width:100%;max-width:440px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:32px;box-shadow:0 24px 64px rgba(0,0,0,.45)}
+.logo{display:flex;align-items:center;gap:10px;margin-bottom:4px}.dot{width:12px;height:12px;border-radius:50%;background:linear-gradient(135deg,#facc15,#f97316)}.brand{font-weight:700;letter-spacing:.4px}.brand small{display:block;font-weight:400;color:var(--mut);font-size:12px}
+h1{font-size:21px;margin:14px 0 6px}.app{color:#fff}.mut{color:var(--mut);font-size:14px}.box{background:#0d1528;border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:14px;margin:14px 0}
+.warn{border-color:var(--warn);color:#fde68a}.errbox{border-color:var(--err);color:#fecaca}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 0}.chip{background:#1e2a47;border:1px solid var(--line);border-radius:999px;padding:3px 12px;font-size:13px;font-family:ui-monospace,monospace}
+label{display:block;font-size:14px;margin:14px 0 6px}input[type=password]{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:#0d1528;color:var(--txt);font-size:15px}input:focus{outline:2px solid var(--acc);border-color:var(--acc)}
+.row{display:flex;gap:10px;margin-top:18px}button{flex:1;padding:12px;border:0;border-radius:10px;font-size:15px;font-weight:600;cursor:pointer}.allow{background:var(--acc2);color:#05240f}.deny{background:transparent;color:var(--mut);border:1px solid var(--line);flex:.6}.allow:hover{filter:brightness(1.1)}
+.err{color:var(--err);font-size:14px;margin-top:10px}
+.foot{margin-top:18px;font-size:12px;color:var(--mut);text-align:center}
+</style>
+<div class="card">
+<div class="logo"><span class="dot"></span><span class="brand">SECOP Live<small>Colombia · Contratación pública</small></span></div>
+<h1>¿Permitir a <span class="app">${esc(details.clientName)}</span> consultar SECOP?</h1>
+<p class="mut">${details.clientDomain ? `Publicado por <strong style="color:var(--txt)">${esc(details.clientDomain)}</strong>.` : "Esta app se registró sola; su nombre no está verificado."}
+El acceso se enviará a <strong style="color:var(--txt)">${esc(details.redirectHost)}</strong>.</p>
+${details.redirectIsLoopback ? `<div class="box warn">⚠️ El acceso llega a una app en <strong>tu computador</strong>. Continúa solo si acabas de iniciar sesión desde ella.</div>` : ""}
+<div class="box"><div class="mut">Permisos solicitados</div><div class="chips">${scopes}</div></div>
+${err ? `<div class="box errbox">⛔ ${esc(err)}</div>` : ""}
 <form method="post">
 <input type="hidden" name="handle" value="${esc(consent.handle)}">
-<p><label>Access code (your SECOP API key):<br><input type="password" name="code" autocomplete="off"></label></p>
-<p><button name="decision" value="approve">Allow</button>
-<button name="decision" value="deny">Deny</button></p>
-</form>`;
+<label for="code">Clave de acceso (tu API key de SECOP Live)</label>
+<input id="code" type="password" name="code" autocomplete="off" placeholder="••••••••" autofocus>
+<div class="row"><button class="deny" name="decision" value="deny">Denegar</button><button class="allow" name="decision" value="approve">Permitir</button></div>
+${err ? `<div class="err">${esc(err)}</div>` : ""}
+</form>
+<div class="foot">Solo lectura: búsqueda de licitaciones y documentos. Nada se modifica.</div>
+</div>`;
   const headers = new Headers({ "Content-Type": "text/html;charset=utf-8" });
   consent.headers.forEach((v, k) => headers.append(k, v));
   return new Response(html, { headers });
@@ -97,7 +116,7 @@ async function authorizeSubmit(req: Request, env: OAuthEnv): Promise<Response> {
   }
   const code = String(form.get("code") || "");
   if (!validCode(env, code)) {
-    return authorizePage(req, env, "Invalid access code.");
+    return authorizePage(req, env, "Clave inválida, intenta de nuevo.");
   }
   const approved = await oauth.approveConsent(req, handle);
   const done = await oauth.completeAuthorization({
