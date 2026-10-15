@@ -84,3 +84,20 @@ The optional Docker target remains a public proxy; private features require the
 Worker bindings and never fall back to in-memory persistence. Local integration
 tests use real Miniflare D1/R2. Durable queued jobs use leases and a persisted
 outbox; scheduled reconciliation redispatches missed or expired work each minute.
+
+### Extraction providers
+
+Set `EXTRACTOR_URL` (HTTPS) and secret `EXTRACTOR_KEY` for an OCR-capable service.
+It receives multipart `file` and JSON `options` and must return
+`{parserVersion, pages:[{page?,section?,text}], warnings:[], complete:true}`.
+Partial or unreadable responses never become complete analyses. Alternatively,
+attach a Cloudflare AI binding for `toMarkdown`; this adapter explicitly marks
+its results as requiring source/OCR review. It supports parser-provided page
+headings and section references without inventing pages. See
+https://developers.cloudflare.com/workers-ai/features/markdown-conversion/usage/binding/.
+
+ZIP inventories are checked for traversal, entry count, expanded size and nesting
+before extraction. The default limits are 100 entries, 100 MiB expanded and one
+nested archive. Uploaded originals stay private in R2; one-use, 10-minute upload
+tickets associate replacements with blocked items. Protected upload pages keep
+tickets in URL fragments and remove them from history before posting bytes.
