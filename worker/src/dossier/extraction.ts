@@ -195,7 +195,8 @@ export class CloudflareExtractionProvider implements ExtractionProvider {
       };
     });
     const usable = pages.filter(
-      (p) => p.text.trim() && !/^# .*\n## Metadata\b/s.test(p.text),
+      (p) =>
+        "page" in p || (p.text.trim() && !/^# .*\n## Metadata\b/s.test(p.text)),
     );
     return normalizeExtraction({
       parserVersion: "cloudflare-tomarkdown-v1",
@@ -203,6 +204,80 @@ export class CloudflareExtractionProvider implements ExtractionProvider {
       warnings: ["OCR_AND_SOURCE_COMPLETENESS_REQUIRE_REVIEW"],
       complete: true,
     });
+  }
+}
+export type OcrServiceBinding = { fetch(request: Request): Promise<Response> };
+/** Private service binding: no public extractor URL or client-side credentials. */
+export class CpuOcrFallbackProvider implements ExtractionProvider {
+  constructor(
+    readonly primary: ExtractionProvider,
+    readonly service: OcrServiceBinding,
+  ) {}
+  async extract(
+    file: ExtractionFile,
+    signal: AbortSignal,
+  ): Promise<ExtractionResult> {
+    if (file.mime !== "application/pdf")
+      return this.primary.extract(file, signal);
+    try {
+      const result = await this.primary.extract(file, signal);
+      if (!result.warnings.includes("EMPTY_PAGES_REQUIRE_OCR")) return result;
+    } catch (error) {
+      if (
+        !(error instanceof DossierError) ||
+        ![
+          "OCR_REQUIRED",
+          "OCR_OR_FORMAT_UNAVAILABLE",
+          "EXTRACTOR_UNCONFIGURED",
+        ].includes(error.code)
+      )
+        throw error;
+    }
+    signal.throwIfAborted();
+    if (file.bytes.length > 25 * 1024 * 1024)
+      throw new DossierError("OCR_FILE_LIMIT", 413);
+    const response = await this.service.fetch(
+      new Request("https://ocr.internal/v1/extract", {
+        method: "POST",
+        headers: { "content-type": "application/pdf" },
+        body: Uint8Array.from(file.bytes).buffer,
+        signal,
+      }),
+    );
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      if (body.error === "OCR_TIMEOUT")
+        throw new DossierError("OCR_TIMEOUT", 409);
+      if (response.status === 429 || response.status >= 500)
+        throw new DossierError(
+          response.status === 429 ? "OCR_BUSY" : "OCR_UNAVAILABLE",
+          503,
+          true,
+        );
+      const code = [
+        "OCR_PAGE_LIMIT",
+        "OCR_FILE_LIMIT",
+        "OCR_TIMEOUT",
+        "OCR_INVALID_PDF",
+        "OCR_ENCRYPTED_PDF",
+      ].includes(body.error ?? "")
+        ? body.error!
+        : "OCR_EXTRACTION_FAILED";
+      throw new DossierError(code, 409);
+    }
+    const result = normalizeExtraction(
+      JSON.parse(
+        new TextDecoder().decode(
+          await boundedBytes(response, 10 * 1024 * 1024),
+        ),
+      ),
+    );
+    return {
+      ...result,
+      warnings: [...new Set([...result.warnings, "OCR_TEXT_REQUIRES_REVIEW"])],
+    };
   }
 }
 async function extractBounded(
@@ -266,11 +341,26 @@ export async function saveExtraction(
   const chunks = splitEvidence(normalizeExtraction(result), documentVersionId);
   for (const chunk of chunks)
     await repo.upsert("chunk", `${documentVersionId}.${chunk.index}`, chunk);
+  // Recovered evidence changes the corpus used by reports and pinned chats.
+  if (doc.value.error && !doc.value.dossierId.startsWith("company:")) {
+    const dossier = await repo.readDossier(doc.value.dossierId);
+    await repo.save(
+      "dossier",
+      dossier.id,
+      {
+        ...dossier.value,
+        corpusRevision: Number(dossier.value.corpusRevision ?? 0) + 1,
+        needsSynthesis: true,
+      },
+      dossier.revision,
+    );
+  }
   await repo.save(
     "document",
     doc.id,
     {
       ...doc.value,
+      error: undefined,
       state: result.warnings.length ? "review_required" : "ready",
       parserVersion: result.parserVersion,
       warnings: result.warnings,
@@ -350,7 +440,7 @@ export async function extractDocument(
     const result = await extractBounded(
       { name: doc.value.name, mime, bytes },
       provider,
-      AbortSignal.timeout(90000),
+      AbortSignal.timeout(105000),
     );
     await checkpoint?.();
     await saveExtraction(repo, id, result);

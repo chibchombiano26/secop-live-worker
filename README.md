@@ -87,6 +87,10 @@ outbox; scheduled reconciliation redispatches missed or expired work each minute
 
 ### Extraction providers
 
+For an optional private CPU OCR fallback on Cloudflare Containers, see
+[the CPU OCR guide](docs/guides/cpu-ocr.md). Bind `SECOP_OCR` to the deployed
+OCR Worker; native readable PDFs do not invoke OCR.
+
 Set `EXTRACTOR_URL` (HTTPS) and secret `EXTRACTOR_KEY` for an OCR-capable service.
 It receives multipart `file` and JSON `options` and must return
 `{parserVersion, pages:[{page?,section?,text}], warnings:[], complete:true}`.

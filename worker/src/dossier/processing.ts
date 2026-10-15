@@ -11,6 +11,8 @@ import {
 import {
   extractDocument,
   HttpExtractionProvider,
+  CpuOcrFallbackProvider,
+  type OcrServiceBinding,
   CloudflareExtractionProvider,
   type ExtractionProvider,
   type MarkdownBinding,
@@ -22,6 +24,7 @@ import { answerTenderQuestion, type ChatInput } from "./conversations";
 import type { PrivateServiceEnv } from "./api";
 export type ProcessingEnv = PrivateServiceEnv &
   ModelEnv & {
+    SECOP_OCR?: OcrServiceBinding;
     EXTRACTOR_URL?: string;
     EXTRACTOR_KEY?: string;
     AI?: ModelEnv["AI"] & Partial<MarkdownBinding>;
@@ -29,6 +32,7 @@ export type ProcessingEnv = PrivateServiceEnv &
 export async function enqueueSynthesisWhenReady(
   repo: DossierRepository,
   dossierId: string,
+  finishingJobId?: string,
 ) {
   const dossier = await repo.readDossier(dossierId);
   const ids = (dossier.value.documentIds ?? []) as string[];
@@ -36,6 +40,13 @@ export async function enqueueSynthesisWhenReady(
     ids.map((id) => repo.read<DocumentVersion>("document", id)),
   );
   if (docs.some((d) => d.value.state === "pending")) return;
+  const active = await repo.db
+    .prepare(
+      "SELECT 1 AS found FROM dossier_jobs WHERE owner_id=? AND kind='extract' AND state IN ('queued','running') AND id!=? AND target_id IN (SELECT value FROM json_each(?)) LIMIT 1",
+    )
+    .bind(repo.context.ownerId, finishingJobId ?? "", JSON.stringify(ids))
+    .first();
+  if (active) return;
   return repo.enqueueJob({
     kind: "synthesize",
     targetId: dossierId,
@@ -45,9 +56,10 @@ export async function enqueueSynthesisWhenReady(
 async function enqueueAfterExtraction(
   repo: DossierRepository,
   document: DocumentVersion,
+  finishingJobId?: string,
 ) {
   if (!document.dossierId.startsWith("company:"))
-    await enqueueSynthesisWhenReady(repo, document.dossierId);
+    await enqueueSynthesisWhenReady(repo, document.dossierId, finishingJobId);
   else {
     const companyId = document.dossierId.slice(8);
     const company = await repo.read("company", companyId);
@@ -89,9 +101,9 @@ export async function executeProcessingJob(
   env: ProcessingEnv,
   adapters?: { model?: ModelProvider; extractor?: ExtractionProvider },
 ) {
-  let latestProgress={...job.progress};
+  let latestProgress = { ...job.progress };
   const checkpoint = async (progress: Record<string, unknown> = {}) => {
-    latestProgress={...latestProgress,...progress};
+    latestProgress = { ...latestProgress, ...progress };
     await repo.checkpointJob(job.id, job.lease!, latestProgress);
   };
   const model = () =>
@@ -132,6 +144,8 @@ export async function executeProcessingJob(
                 toMarkdown: env.AI.toMarkdown.bind(env.AI),
               })
             : new HttpExtractionProvider(env);
+      if (!adapters?.extractor && env.SECOP_OCR && !env.EXTRACTOR_URL)
+        extractor = new CpuOcrFallbackProvider(extractor, env.SECOP_OCR);
       try {
         await extractDocument(repo, doc.id, extractor, () =>
           checkpoint({ stage: "extracting", documentId: doc.id }),
@@ -146,11 +160,11 @@ export async function executeProcessingJob(
               { ...current.value, state: "failed", error: e.code },
               current.revision,
             );
-          await enqueueAfterExtraction(repo, doc.value);
+          await enqueueAfterExtraction(repo, doc.value, job.id);
         }
         throw e;
       }
-      await enqueueAfterExtraction(repo, doc.value);
+      await enqueueAfterExtraction(repo, doc.value, job.id);
       await checkpoint({ documentId: doc.id, stage: "extracted" });
       return;
     }

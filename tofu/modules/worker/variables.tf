@@ -32,3 +32,9 @@ variable "dossier_secrets" {
   default   = {}
   sensitive = true
 }
+
+variable "ocr_worker_service" {
+  description = "Optional private Cloudflare Containers OCR Worker service name, deployed with ocr/wrangler.jsonc"
+  type        = string
+  default     = ""
+}

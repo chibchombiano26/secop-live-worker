@@ -1,6 +1,7 @@
 import {
   executeProcessingJob,
   recoverTerminalExtractions,
+  enqueueSynthesisWhenReady,
 } from "../src/dossier/processing";
 import { DossierError } from "../src/dossier/contracts";
 import { executePrivateOperation } from "../src/dossier/api";
@@ -258,6 +259,76 @@ describe("persisted dossier, assessment and chat workflow", () => {
         "https://secop.test",
       ),
     ).rejects.toThrow("IDEMPOTENCY_CONFLICT");
+  });
+
+  it("invalidates the old report and clears the OCR error after recovering an unreadable document", async () => {
+    const dossierId = "CO1.REQ.OCR-RECOVERY";
+    await repo.save(
+      "dossier",
+      dossierId,
+      {
+        processId: dossierId,
+        corpusRevision: 1,
+        needsSynthesis: false,
+        reportRevision: 1,
+        documentIds: ["ocr-recovery"],
+      },
+      0,
+    );
+    await repo.save(
+      "document",
+      "ocr-recovery",
+      {
+        name: "Scan.pdf",
+        dossierId,
+        state: "failed",
+        error: "OCR_REQUIRED",
+        corpusRevision: 1,
+      },
+      0,
+    );
+    await saveExtraction(repo, "ocr-recovery", {
+      parserVersion: "cpu-ocr",
+      pages: [{ page: 1, text: "The actual submission deadline is tomorrow." }],
+      warnings: ["OCR_TEXT_REQUIRES_REVIEW"],
+      complete: true,
+    });
+    const document = await repo.read<any>("document", "ocr-recovery");
+    expect(document.value.error).toBeUndefined();
+    expect(document.value.state).toBe("review_required");
+    const dossier = await repo.readDossier(dossierId);
+    expect(dossier.value.corpusRevision).toBe(2);
+    expect(dossier.value.needsSynthesis).toBe(true);
+  });
+
+  it("waits for queued recovery jobs even when their document still has a failed state", async () => {
+    const id = "CO1.REQ.OCR-QUEUE";
+    await repo.save(
+      "dossier",
+      id,
+      { processId: id, corpusRevision: 1, documentIds: ["ocr-wait"] },
+      0,
+    );
+    await repo.save(
+      "document",
+      "ocr-wait",
+      {
+        name: "Scan.pdf",
+        dossierId: id,
+        state: "failed",
+        error: "OCR_REQUIRED",
+      },
+      0,
+    );
+    const job = await repo.enqueueJob({
+      kind: "extract",
+      targetId: "ocr-wait",
+      key: "ocr-wait-extraction",
+    });
+    expect(await enqueueSynthesisWhenReady(repo, id)).toBeUndefined();
+    expect(await enqueueSynthesisWhenReady(repo, id, job.id)).toMatchObject({
+      kind: "synthesize",
+    });
   });
 
   it("extracts cited company figures as reviewable candidates instead of automatically verified facts", async () => {
