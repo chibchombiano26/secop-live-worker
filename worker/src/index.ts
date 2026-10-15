@@ -1,3 +1,5 @@
+import { authorizePrivateCode } from "./dossier/authorization";
+import { PRIVATE_SCOPES } from "./dossier/contracts";
 import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
 import { createHandler } from "./mcp";
 import { OPENAPI, scalarHtml } from "./openapi";
@@ -51,7 +53,7 @@ function pageUrls(req: Request, res: Record<string, unknown>): Record<string, un
 
 function validCode(env: Env, code: string | null): boolean {
   const keys = (env.API_KEYS || "").split(",").map((k) => k.trim()).filter(Boolean);
-  return !!code && (keys.length === 0 || keys.includes(code));
+  return !!code && keys.length > 0 && keys.includes(code);
 }
 
 async function authorizePage(req: Request, env: OAuthEnv, err = ""): Promise<Response> {
@@ -64,6 +66,7 @@ async function authorizePage(req: Request, env: OAuthEnv, err = ""): Promise<Res
   }
   const details = await oauth.describeConsent(authReq);
   const consent = await oauth.beginConsent(authReq);
+  const privateConsent = details.scope.some(scope => (PRIVATE_SCOPES as readonly string[]).includes(scope));
   const scopes = details.scope.map((s) => `<span class="chip">${esc(s)}</span>`).join("");
   const html = `<!doctype html><html lang="es"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -96,7 +99,7 @@ ${err ? `<div class="box errbox">⛔ ${esc(err)}</div>` : ""}
 <div class="row"><button class="deny" name="decision" value="deny">Denegar</button><button class="allow" name="decision" value="approve">Permitir</button></div>
 ${err ? `<div class="err">${esc(err)}</div>` : ""}
 </form>
-<div class="foot">Solo lectura: búsqueda de licitaciones y documentos. Nada se modifica.</div>
+<div class="foot">${privateConsent ? `Expediente privado: guarda documentos de empresa, analiza evidencia y conserva conversaciones. Procesamiento con ${esc(String(env.AI_PROVIDER_LABEL || "el proveedor de IA configurado por el administrador"))}. Usa esta conexión únicamente en un espacio de Savia.` : "Solo lectura: búsqueda de licitaciones y documentos. Nada se modifica."}</div>
 </div>`;
   const headers = new Headers({ "Content-Type": "text/html;charset=utf-8" });
   consent.headers.forEach((v, k) => headers.append(k, v));
@@ -115,17 +118,24 @@ async function authorizeSubmit(req: Request, env: OAuthEnv): Promise<Response> {
     return new Response(null, { status: 302, headers });
   }
   const code = String(form.get("code") || "");
-  if (!validCode(env, code)) {
-    return authorizePage(req, env, "Clave inválida, intenta de nuevo.");
-  }
   const approved = await oauth.approveConsent(req, handle);
-  const done = await oauth.completeAuthorization({
-    request: approved.request,
-    userId: "secop-user",
-    metadata: {},
-    scope: ["mcp:read"],
-    props: {},
-  });
+  const details = await oauth.describeConsent(approved.request);
+  const privateRequested = details.scope.some(scope => (PRIVATE_SCOPES as readonly string[]).includes(scope));
+  let props: unknown = {};
+  let userId = "secop-user";
+  let granted: string[] = details.scope.filter(scope => scope === "mcp:read" || scope === "offline_access");
+  if (privateRequested) {
+    try {
+      const context = await authorizePrivateCode(env, code, details.scope);
+      props = context; userId = context.ownerId;
+      granted = [...granted, ...context.scopes];
+    } catch {
+      return Response.json({ error: "Private connection authorization denied. Restart authorization with a valid private access code." }, { status: 403 });
+    }
+  } else if (!validCode(env, code)) {
+    return Response.json({ error: "Invalid access code. Restart authorization." }, { status: 403 });
+  }
+  const done = await oauth.completeAuthorization({ request: approved.request, userId, metadata: {}, scope: granted, props });
   const headers = new Headers(approved.headers as Headers);
   headers.set("Location", done.redirectTo);
   return new Response(null, { status: 302, headers });
@@ -196,8 +206,8 @@ function providerFor(req: Request) {
   return new OAuthProvider({
     apiRoute: "/mcp",
     apiHandler: {
-      fetch: (r: Request, env: Cloudflare.Env) =>
-        (createHandler(env as unknown as Env) as unknown as { fetch: (x: Request) => Promise<Response> }).fetch(r),
+      fetch: (r: Request, env: Cloudflare.Env, ctx: ExecutionContext) =>
+        (createHandler(env as unknown as Env, (ctx as ExecutionContext & {props?: unknown}).props) as unknown as { fetch: (x: Request) => Promise<Response> }).fetch(r),
     },
     defaultHandler: {
       fetch: (r: Request, env: Cloudflare.Env) => handleRest(r, env as unknown as Env),
@@ -205,7 +215,7 @@ function providerFor(req: Request) {
     authorizeEndpoint: "/authorize",
     tokenEndpoint: "/oauth/token",
     clientRegistrationEndpoint: "/oauth/register",
-    scopesSupported: ["mcp:read", "offline_access"],
+    scopesSupported: ["mcp:read", "offline_access", ...PRIVATE_SCOPES],
     requiredScopes: ["mcp:read"],
     clientIdMetadataDocumentEnabled: true,
     resourceMetadata: {

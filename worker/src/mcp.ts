@@ -5,7 +5,7 @@ import * as z from "zod/v4";
 import { DATASETS, buildDocsQuery, buildProcesosQuery, page, socrataFetch } from "./socrata";
 import type { Env } from "./socrata";
 
-export function createHandler(env: Env) {
+export function createHandler(env: Env, privateContext?: unknown) {
   return createMcpHandler(() => {
     const server = new McpServer({ name: "secop-live", version: "1.0.0" });
 

@@ -1,5 +1,7 @@
 export interface Env extends Record<string, unknown> {
   API_KEYS?: string;
+  PRIVATE_AUTH_PEPPER?: string;
+  PRIVATE_CONNECTIONS?: string;
   SOCRATA_APP_TOKEN?: string;
   CACHE_TTL?: string;
   SOCRATA_DOMAIN?: string;

@@ -61,3 +61,17 @@ Plugins → Add custom MCP server → worker URL → OAuth → approve.
 Public MCP compatibility includes `opciones_licitaciones` (complete cached catalogs)
 and `documentos_licitacion` (verified tender/portfolio document association).
 The maintained adapters live in `worker/src/public/`; do not patch built bundles.
+
+## Private connection isolation
+
+Private capabilities require separate per-owner credentials, never public API keys.
+`PRIVATE_AUTH_PEPPER` is a server secret of at least 32 characters.
+`PRIVATE_CONNECTIONS` is a secret JSON array of `{ownerId, codeDigest, tokenDigest,
+scopes, expiresAt?}` records. Digests are HMAC-SHA256 over `code:<value>` or
+`token:<value>` using the pepper; never store raw codes or bearer tokens here.
+Bind a dedicated owner/credential to exactly one Savia workspace connection.
+Reuse that owner on reconnect; remove its entry to revoke credentials.
+Private scopes are `dossier:read`, `dossier:write`, `company:write`, and
+`conversation:write`. Old `mcp:read` grants keep public reads only; new scopes
+require a fresh explicit consent. OAuth approval fails if no valid code is
+configured. Public unauthenticated REST development behavior is unchanged.
