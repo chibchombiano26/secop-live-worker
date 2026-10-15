@@ -31,5 +31,10 @@ queue = "secop-dossier-jobs"
 max_batch_size = 1
 max_retries = 5
 dead_letter_queue = "secop-dossier-dead-letter"
+# Optional existing Vectorize index for dossier retrieval. Configure the same
+# index through dossier_vector_index_name when deploying with OpenTofu.
+# [[env.dossier.vectorize]]
+# binding = "DOSSIER_VECTORS"
+# index_name = "secop-dossier-evidence"
 [env.dossier.triggers]
 crons = ["* * * * *"]

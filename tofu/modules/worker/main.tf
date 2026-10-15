@@ -33,7 +33,7 @@ resource "cloudflare_workers_script" "this" {
     { name = "DOSSIER_FILES", type = "r2_bucket", bucket_name = cloudflare_r2_bucket.dossiers[0].name },
     { name = "DOSSIER_QUEUE", type = "queue", queue_name = cloudflare_queue.dossiers[0].queue_name },
     { name = "AI", type = "ai" }
-  ] : [], var.enable_dossiers && var.ocr_worker_service != "" ? [{ name = "SECOP_OCR", type = "service", service = var.ocr_worker_service }] : [], [for name, value in var.dossier_secrets : { name = name, type = "secret_text", text = value }])
+  ] : [], var.enable_dossiers && var.dossier_vector_index_name != "" ? [{ name = "DOSSIER_VECTORS", type = "vectorize", index_name = var.dossier_vector_index_name }] : [], var.enable_dossiers && var.ocr_worker_service != "" ? [{ name = "SECOP_OCR", type = "service", service = var.ocr_worker_service }] : [], [for name, value in var.dossier_secrets : { name = name, type = "secret_text", text = value }])
 }
 
 resource "cloudflare_workers_script_subdomain" "this" {

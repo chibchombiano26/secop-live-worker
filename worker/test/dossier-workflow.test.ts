@@ -76,6 +76,12 @@ const model: ModelProvider = {
           ],
         };
       case "tender_conversation":
+        if (!c)
+          return {
+            answer: "No matching evidence was retrieved.",
+            insufficientEvidence: true,
+            citations: [],
+          };
         return {
           answer: "The tender requires experience certificates.",
           insufficientEvidence: false,
@@ -643,5 +649,149 @@ describe("persisted dossier, assessment and chat workflow", () => {
     expect(
       (await readConversation(repo, first.conversationId)).turns,
     ).toHaveLength(3);
+  });
+  it("uses scoped hybrid retrieval in persisted chat and rejects foreign vector sources", async () => {
+    const id = "CO1.REQ.990001";
+    const dossier = await repo.createOrGetDossier(id);
+    await repo.save(
+      "dossier",
+      id,
+      {
+        ...dossier.value,
+        documentIds: ["rag-current"],
+        reportId: "rag-report",
+        needsSynthesis: false,
+        state: "analyzed",
+      },
+      dossier.revision,
+    );
+    await repo.save(
+      "report",
+      "rag-report",
+      {
+        summary: "Obsolete report with incorrect requirements",
+        corpusRevision: -1,
+      },
+      0,
+    );
+    await repo.save(
+      "chunk",
+      "rag-local",
+      {
+        documentVersionId: "rag-current",
+        page: 1,
+        index: 0,
+        text: "El personal debe presentar títulos universitarios en ingeniería.",
+      },
+      0,
+    );
+    await repo.save(
+      "chunk",
+      "rag-foreign",
+      {
+        documentVersionId: "rag-other-tender",
+        page: 1,
+        index: 0,
+        text: "Acreditaciones profesionales: licencia de aviación para Tender B.",
+      },
+      0,
+    );
+    const foreign = new DossierRepository(repo.env, {
+      ...repo.context,
+      ownerId: "other-owner",
+    });
+    await foreign.save(
+      "chunk",
+      "rag-private",
+      {
+        documentVersionId: "rag-current",
+        page: 1,
+        index: 0,
+        text: "Confidential requirements belonging to another owner.",
+      },
+      0,
+    );
+    let vectors: any[] = [];
+    let context: any;
+    const result = await answerTenderQuestion(
+      repo,
+      {
+        dossierId: id,
+        expectedRevision: 0,
+        message: "¿Qué acreditaciones profesionales necesitamos?",
+        idempotencyKey: "rag-isolation-question",
+      },
+      {
+        id: "fixture",
+        async generate(input) {
+          context = input;
+          const source = input.evidence.find(
+            (c) => c.documentVersionId === "rag-current",
+          )!;
+          return {
+            answer: "Se exigen títulos universitarios en ingeniería.",
+            insufficientEvidence: false,
+            citations: [
+              {
+                documentVersionId: source.documentVersionId,
+                page: source.page,
+                excerpt: source.text,
+              },
+            ],
+          };
+        },
+      },
+      {
+        env: {
+          AI: {
+            async run(_model: string, input: any) {
+              return { data: input.text.map(() => Array(1024).fill(0.01)) };
+            },
+          },
+          DOSSIER_VECTORS: {
+            async upsert(rows: any[]) {
+              vectors.push(...rows);
+              return { mutationId: "fixture" };
+            },
+            async query(_values: any, options: any) {
+              expect(options.namespace).toBeTruthy();
+              expect(options.filter).toMatchObject({
+                ownerScope: expect.anything(),
+                tenderScope: expect.anything(),
+                generation: expect.anything(),
+              });
+              return {
+                matches: [
+                  {
+                    ...vectors[0],
+                    score: 0.99,
+                    metadata: {
+                      ...vectors[0].metadata,
+                      tenderScope: "foreign",
+                    },
+                  },
+                  { ...vectors[0], id: "foreign-source", score: 0.98 },
+                  ...vectors.map((vector) => ({ ...vector, score: 0.95 })),
+                ],
+              };
+            },
+          },
+        },
+      },
+    );
+    expect(JSON.stringify(context.context.reportOverview)).not.toContain(
+      "Obsolete report",
+    );
+    expect(context.context.retrieval.mode).toBe("hybrid");
+    expect(context.evidence.map((c: any) => c.text).join(" ")).toContain(
+      "títulos universitarios",
+    );
+    expect(context.evidence.map((c: any) => c.text).join(" ")).not.toMatch(
+      /aviación|Confidential/,
+    );
+    expect(result.retrieval.mode).toBe("hybrid");
+    const stored = await readConversation(repo, result.conversationId);
+    expect((stored.turns[0].value as any).retrieval.mode).toBe("hybrid");
+    expect(result.citations[0].documentVersionId).toBe("rag-current");
   });
 });

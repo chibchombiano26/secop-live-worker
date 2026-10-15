@@ -11,6 +11,7 @@ import type { EvidenceChunk } from "./extraction";
 import { companyEvidence } from "./companies";
 import type { ModelProvider, ModelInput } from "./model";
 import { sha256 } from "./downloads";
+import { retrieveTenderEvidence, type RetrievalEnv } from "./retrieval";
 function words(value: string) {
   return value
     .normalize("NFD")
@@ -135,12 +136,14 @@ type ChatTurn = z.infer<typeof answerSchema> & {
   companyRevision: number | null;
   stale: boolean;
   model: string;
+  retrieval: Record<string, unknown>;
   at: number;
 };
 export async function answerTenderQuestion(
   repo: DossierRepository,
   input: ChatInput,
   model: ModelProvider,
+  options: { env?: RetrievalEnv; heartbeat?: () => Promise<void> } = {},
 ): Promise<
   ChatTurn & {
     conversationId: string;
@@ -239,8 +242,16 @@ export async function answerTenderQuestion(
         .slice(-3)
         .map((turn) => repo.read("message", turn)),
     );
+    const retrieved = await retrieveTenderEvidence(
+      repo,
+      input.dossierId,
+      chunks,
+      input.message,
+      options.env ?? {},
+      options.heartbeat,
+    );
     const evidence = [
-      ...retrieveEvidence(chunks, input.message, 6),
+      ...retrieved.evidence,
       ...retrieveEvidence(companyChunks, input.message, 3),
     ];
     const output = await generateGroundedAnswer(model, {
@@ -249,19 +260,33 @@ export async function answerTenderQuestion(
       evidence,
       context: {
         question: input.message,
-        history: recent.map((r) => {
-          const v = r.value as { userMessage: string; answer: string };
-          return {
-            userMessage: v.userMessage,
-            answerExcerpt: v.answer.slice(0, 1000),
-          };
-        }),
-        reportOverview: {
-          summaryExcerpt: String(
-            (report.value as { summary?: string }).summary ?? "",
-          ).slice(0, 4000),
-          coverage: (report.value as { coverage?: unknown }).coverage,
-        },
+        retrieval: retrieved.retrieval,
+        history: recent
+          .filter((r) => {
+            const v = r.value as Partial<ChatTurn>;
+            return (
+              v.corpusRevision === dossier.value.corpusRevision &&
+              v.companyRevision === (company?.company.revision ?? null)
+            );
+          })
+          .map((r) => {
+            const v = r.value as ChatTurn;
+            return {
+              userMessage: v.userMessage,
+              answerExcerpt: v.answer.slice(0, 1000),
+            };
+          }),
+        reportOverview:
+          !dossier.value.needsSynthesis &&
+          (report.value as { corpusRevision?: number }).corpusRevision ===
+            dossier.value.corpusRevision
+            ? {
+                summaryExcerpt: String(
+                  (report.value as { summary?: string }).summary ?? "",
+                ).slice(0, 4000),
+                coverage: (report.value as { coverage?: unknown }).coverage,
+              }
+            : { summaryExcerpt: "", stale: true },
         companyAssertions: company
           ? {
               name: company.company.value.name,
@@ -299,6 +324,7 @@ export async function answerTenderQuestion(
       companyRevision: company?.company.revision ?? null,
       stale,
       model: model.id,
+      retrieval: retrieved.retrieval,
       at: repo.now(),
     };
     const current = await repo.read<Conversation>("conversation", id);

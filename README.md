@@ -115,6 +115,16 @@ sources are explicit in model context. Failed chat reservations can be retried
 with the same request identity without conflicting with their own cleanup;
 stale requests after another committed turn remain rejected.
 
+Optional [hybrid retrieval](docs/guides/hybrid-retrieval.md) combines local
+lexical ranking with BGE-M3 embeddings and a separate `DOSSIER_VECTORS` index.
+Every vector query is constrained to the authenticated owner, tender, and
+current corpus generation. Returned IDs are resolved against canonical source
+records before any text reaches the model. Lazy indexing is checkpointed and
+bounded; unavailable or not-yet-visible vectors are reported as degraded lexical
+retrieval. Embedding calls have a separate daily owner budget. Chat records
+retain retrieval coverage, and obsolete report summaries and conversation turns
+are excluded from the current model context.
+
 Model calls use `MODEL_NAME` and either Cloudflare AI (`@cf/...`) or a fixed
 HTTPS OpenAI-compatible `MODEL_URL` with secret `MODEL_KEY`. Set
 `AI_PROVIDER_LABEL` to identify the processor on the consent screen. Defaults

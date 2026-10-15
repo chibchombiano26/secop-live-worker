@@ -16,6 +16,7 @@ module "worker" {
   ocr_worker_service = var.ocr_worker_service
   enable_dossiers    = var.enable_dossiers
   dossier_secrets    = var.dossier_secrets
+  dossier_vector_index_name = var.dossier_vector_index_name
   custom_hostname    = var.custom_hostname
   zone_id            = var.cloudflare_zone_id
 }

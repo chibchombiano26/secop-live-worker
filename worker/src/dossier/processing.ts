@@ -22,8 +22,10 @@ import { synthesizeDossier } from "./synthesis";
 import { assessCompany } from "./assessment";
 import { answerTenderQuestion, type ChatInput } from "./conversations";
 import type { PrivateServiceEnv } from "./api";
+import type { RetrievalEnv } from "./retrieval";
 export type ProcessingEnv = PrivateServiceEnv &
-  ModelEnv & {
+  ModelEnv &
+  RetrievalEnv & {
     SECOP_OCR?: OcrServiceBinding;
     EXTRACTOR_URL?: string;
     EXTRACTOR_KEY?: string;
@@ -226,7 +228,10 @@ export async function executeProcessingJob(
     }
     case "chat": {
       const request = await repo.read<ChatInput>("message", job.targetId);
-      const result = await answerTenderQuestion(repo, request.value, model());
+      const result = await answerTenderQuestion(repo, request.value, model(), {
+        env,
+        heartbeat: () => checkpoint({ stage: "retrieving_evidence" }),
+      });
       await checkpoint({
         stage: "answered",
         dossierId: request.value.dossierId,

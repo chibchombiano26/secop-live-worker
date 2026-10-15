@@ -33,6 +33,12 @@ variable "dossier_secrets" {
   sensitive = true
 }
 
+variable "dossier_vector_index_name" {
+  description = "Optional existing Cloudflare Vectorize index name for dossier hybrid retrieval"
+  type        = string
+  default     = ""
+}
+
 variable "ocr_worker_service" {
   description = "Optional private Cloudflare Containers OCR Worker service name, deployed with ocr/wrangler.jsonc"
   type        = string
