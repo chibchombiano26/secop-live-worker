@@ -57,3 +57,7 @@ The Worker is also an OAuth 2.1 authorization server
 DCR (`/oauth/register`, CIMD supported), `/authorize` (approve with your
 API key as access code), `/oauth/token` (+ refresh). ChatGPT path:
 Plugins → Add custom MCP server → worker URL → OAuth → approve.
+
+Public MCP compatibility includes `opciones_licitaciones` (complete cached catalogs)
+and `documentos_licitacion` (verified tender/portfolio document association).
+The maintained adapters live in `worker/src/public/`; do not patch built bundles.

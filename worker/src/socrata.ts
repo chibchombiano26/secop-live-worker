@@ -1,4 +1,4 @@
-export interface Env {
+export interface Env extends Record<string, unknown> {
   API_KEYS?: string;
   SOCRATA_APP_TOKEN?: string;
   CACHE_TTL?: string;
