@@ -65,7 +65,10 @@ export class ConfiguredModel implements ModelProvider {
         this.id,
         {
           messages: [
-            { role: "system", content: system },
+            {
+              role: "system",
+              content: `${system} Current UTC date: ${new Date().toISOString().slice(0, 10)}. Compare source dates against this date, without inventing updates to source status.`,
+            },
             { role: "user", content: prompt },
           ],
           max_tokens: 6000,
@@ -111,7 +114,10 @@ export class ConfiguredModel implements ModelProvider {
           body: JSON.stringify({
             model: this.id,
             messages: [
-              { role: "system", content: system },
+              {
+                role: "system",
+                content: `${system} Current UTC date: ${new Date().toISOString().slice(0, 10)}. Compare source dates against this date, without inventing updates to source status.`,
+              },
               { role: "user", content: prompt },
             ],
             temperature: 0,
