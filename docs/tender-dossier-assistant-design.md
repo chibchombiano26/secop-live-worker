@@ -1,11 +1,14 @@
 # Tender dossier and company-fit MCP service
 
-Status: proposed, pending written design review.
+Status: approved by the user. Implementation planning identified the existing
+Savia MCP adapter as read-only; the transport clarification below preserves the
+approved no-custom-Savia-server boundary.
 
 ## Goal and boundary
 
 Implement the SECOP dossier, company-fit assessment and tender conversation in
-this repository. Savia consumes fixed MCP tools and renders their results in its
+this repository. Savia consumes fixed MCP read tools and existing generic HTTP connector actions
+for mutations/generation, and renders their results in its
 procurement.secop plugin. No SECOP-specific endpoint, migration, assistant context
 or background worker is added to Savia's server. The plugin may use existing
 Savia collections, files and source actions without extending their contracts.
@@ -150,6 +153,13 @@ provider key or grant token appears in stored reports or logs. Cancellation
 stops new work and preserves completed extraction.
 
 ## Plugin integration and delivery
+
+The existing Savia MCP action adapter explicitly rejects write tools. Expose
+private service operations through a parallel /private/v1 HTTP interface using
+the same service contracts and owner checks. Use a separate scoped per-owner
+bearer credential configured in Savia's existing secret-backed HTTP connector;
+public API_KEYS do not grant private access. Never mislabel writes as read-only.
+Generate the HTTP schema from the shared Zod contracts.
 
 Update only procurement.secop plugin sources in Savia for Overview, Documents,
 Requirements, Company fit and Assistant views. The plugin stores no credentials,
