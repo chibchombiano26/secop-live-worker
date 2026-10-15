@@ -400,7 +400,7 @@ export class DossierRepository {
   async completeJob(id: string, lease: string) {
     const res = await this.db
       .prepare(
-        "UPDATE dossier_jobs SET state='succeeded',lease=NULL,lease_until=NULL WHERE owner_id=? AND id=? AND state='running' AND lease=? AND lease_until>?",
+        "UPDATE dossier_jobs SET state='succeeded',error=NULL,lease=NULL,lease_until=NULL WHERE owner_id=? AND id=? AND state='running' AND lease=? AND lease_until>?",
       )
       .bind(this.context.ownerId, id, lease, this.now())
       .run();

@@ -128,7 +128,13 @@ export async function refreshInventory(
     adapters.page,
     adapters.checkpoint,
   );
-  const inventoryHash = await sha256(JSON.stringify({ description, docs }));
+  const inventoryHash = await sha256(
+    JSON.stringify({
+      description,
+      docs,
+      descriptionParser: "official-description-v2",
+    }),
+  );
   if (dossier.value.inventoryHash === inventoryHash) {
     for (const id of (dossier.value.documentIds ?? []) as string[])
       await repo.enqueueJob({
@@ -160,15 +166,20 @@ export async function refreshInventory(
     url: null,
     processId: dossierId,
     state: "ready",
-    parserVersion: "official-description-v1",
+    parserVersion: "official-description-v2",
   });
   for (const chunk of splitEvidence(
     {
-      parserVersion: "official-description-v1",
+      parserVersion: "official-description-v2",
       pages: [
         {
           section: "Official process description",
-          text: JSON.stringify(description),
+          text: Object.entries(description)
+            .map(
+              ([key, value]) =>
+                `${key}: ${typeof value === "object" ? JSON.stringify(value) : String(value ?? "")}`,
+            )
+            .join("\n"),
         },
       ],
       warnings: [],
