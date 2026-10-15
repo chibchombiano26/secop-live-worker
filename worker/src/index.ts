@@ -1,3 +1,7 @@
+import { sweepOriginalRetention } from "./dossier/retention";
+import { privateApiRequest } from "./dossier/api";
+import { dispatchJobs, processJob } from "./dossier/jobs";
+import { executeProcessingJob, type ProcessingEnv } from "./dossier/processing";
 import { authorizePrivateCode } from "./dossier/authorization";
 import { PRIVATE_SCOPES } from "./dossier/contracts";
 import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
@@ -11,19 +15,41 @@ import {
   socrataFetch,
   type Env,
 } from "./socrata";
-import { cachedJson, isOpen, keyValid, requestKey, unauthorized } from "./cache";
+import {
+  cachedJson,
+  isOpen,
+  keyValid,
+  requestKey,
+  unauthorized,
+} from "./cache";
 
 type OAuthEnv = Env & {
   OAUTH_PROVIDER: {
     parseAuthRequest(r: Request): Promise<unknown>;
     describeConsent(r: unknown): Promise<{
-      clientName: string; clientDomain: string | null; redirectHost: string;
-      redirectIsLoopback: boolean; scope: string[];
+      clientName: string;
+      clientDomain: string | null;
+      redirectHost: string;
+      redirectIsLoopback: boolean;
+      scope: string[];
     }>;
     beginConsent(r: unknown): Promise<{ handle: string; headers: Headers }>;
-    approveConsent(r: Request, handle: string, o?: { scope?: string[] }): Promise<{ request: unknown; headers: Headers }>;
-    denyConsent(r: Request, handle: string): Promise<{ headers: Headers } & Record<string, unknown>>;
-    completeAuthorization(o: { request: unknown; userId: string; metadata: unknown; scope: string[]; props: unknown }): Promise<{ redirectTo: string }>;
+    approveConsent(
+      r: Request,
+      handle: string,
+      o?: { scope?: string[] },
+    ): Promise<{ request: unknown; headers: Headers }>;
+    denyConsent(
+      r: Request,
+      handle: string,
+    ): Promise<{ headers: Headers } & Record<string, unknown>>;
+    completeAuthorization(o: {
+      request: unknown;
+      userId: string;
+      metadata: unknown;
+      scope: string[];
+      props: unknown;
+    }): Promise<{ redirectTo: string }>;
   };
 };
 
@@ -33,9 +59,13 @@ function num(v: string | null | undefined, def: number, max: number): number {
   return Math.min(n, max);
 }
 
-const esc = (v: string) => v.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const esc = (v: string) =>
+  v.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-function pageUrls(req: Request, res: Record<string, unknown>): Record<string, unknown> {
+function pageUrls(
+  req: Request,
+  res: Record<string, unknown>,
+): Record<string, unknown> {
   const out = { ...res };
   const set = (k: string, off: number | null) => {
     if (off === null || off === undefined) {
@@ -52,22 +82,36 @@ function pageUrls(req: Request, res: Record<string, unknown>): Record<string, un
 }
 
 function validCode(env: Env, code: string | null): boolean {
-  const keys = (env.API_KEYS || "").split(",").map((k) => k.trim()).filter(Boolean);
+  const keys = (env.API_KEYS || "")
+    .split(",")
+    .map((k) => k.trim())
+    .filter(Boolean);
   return !!code && keys.length > 0 && keys.includes(code);
 }
 
-async function authorizePage(req: Request, env: OAuthEnv, err = ""): Promise<Response> {
+async function authorizePage(
+  req: Request,
+  env: OAuthEnv,
+  err = "",
+): Promise<Response> {
   const oauth = env.OAUTH_PROVIDER;
   let authReq: unknown;
   try {
     authReq = await oauth.parseAuthRequest(req);
   } catch {
-    return Response.json({ detail: "invalid authorize request" }, { status: 400 });
+    return Response.json(
+      { detail: "invalid authorize request" },
+      { status: 400 },
+    );
   }
   const details = await oauth.describeConsent(authReq);
   const consent = await oauth.beginConsent(authReq);
-  const privateConsent = details.scope.some(scope => (PRIVATE_SCOPES as readonly string[]).includes(scope));
-  const scopes = details.scope.map((s) => `<span class="chip">${esc(s)}</span>`).join("");
+  const privateConsent = details.scope.some((scope) =>
+    (PRIVATE_SCOPES as readonly string[]).includes(scope),
+  );
+  const scopes = details.scope
+    .map((s) => `<span class="chip">${esc(s)}</span>`)
+    .join("");
   const html = `<!doctype html><html lang="es"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Autorizar ${esc(details.clientName)} · SECOP Live</title>
@@ -112,7 +156,10 @@ async function authorizeSubmit(req: Request, env: OAuthEnv): Promise<Response> {
   const handle = String(form.get("handle") || "");
   const decision = String(form.get("decision") || "");
   if (decision !== "approve") {
-    const denied = (await oauth.denyConsent(req, handle)) as unknown as { redirectTo: string; headers: Headers };
+    const denied = (await oauth.denyConsent(req, handle)) as unknown as {
+      redirectTo: string;
+      headers: Headers;
+    };
     const headers = new Headers({ Location: denied.redirectTo });
     denied.headers.forEach((v, k) => headers.append(k, v));
     return new Response(null, { status: 302, headers });
@@ -120,22 +167,42 @@ async function authorizeSubmit(req: Request, env: OAuthEnv): Promise<Response> {
   const code = String(form.get("code") || "");
   const approved = await oauth.approveConsent(req, handle);
   const details = await oauth.describeConsent(approved.request);
-  const privateRequested = details.scope.some(scope => (PRIVATE_SCOPES as readonly string[]).includes(scope));
+  const privateRequested = details.scope.some((scope) =>
+    (PRIVATE_SCOPES as readonly string[]).includes(scope),
+  );
   let props: unknown = {};
   let userId = "secop-user";
-  let granted: string[] = details.scope.filter(scope => scope === "mcp:read" || scope === "offline_access");
+  let granted: string[] = details.scope.filter(
+    (scope) => scope === "mcp:read" || scope === "offline_access",
+  );
   if (privateRequested) {
     try {
       const context = await authorizePrivateCode(env, code, details.scope);
-      props = context; userId = context.ownerId;
+      props = context;
+      userId = context.ownerId;
       granted = [...granted, ...context.scopes];
     } catch {
-      return Response.json({ error: "Private connection authorization denied. Restart authorization with a valid private access code." }, { status: 403 });
+      return Response.json(
+        {
+          error:
+            "Private connection authorization denied. Restart authorization with a valid private access code.",
+        },
+        { status: 403 },
+      );
     }
   } else if (!validCode(env, code)) {
-    return Response.json({ error: "Invalid access code. Restart authorization." }, { status: 403 });
+    return Response.json(
+      { error: "Invalid access code. Restart authorization." },
+      { status: 403 },
+    );
   }
-  const done = await oauth.completeAuthorization({ request: approved.request, userId, metadata: {}, scope: granted, props });
+  const done = await oauth.completeAuthorization({
+    request: approved.request,
+    userId,
+    metadata: {},
+    scope: granted,
+    props,
+  });
   const headers = new Headers(approved.headers as Headers);
   headers.set("Location", done.redirectTo);
   return new Response(null, { status: 302, headers });
@@ -144,8 +211,10 @@ async function authorizeSubmit(req: Request, env: OAuthEnv): Promise<Response> {
 async function handleRest(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
+  if (path.startsWith("/private/")) return privateApiRequest(req, env);
 
-  if (path === "/health") return Response.json({ ok: true, mode: "live-worker" });
+  if (path === "/health")
+    return Response.json({ ok: true, mode: "live-worker" });
   if (path === "/openapi.json") return Response.json(OPENAPI);
   if (path === "/scalar")
     return new Response(scalarHtml("/openapi.json"), {
@@ -164,11 +233,20 @@ async function handleRest(req: Request, env: Env): Promise<Response> {
     const offset = num(q("offset"), 0, 1_000_000);
     return cachedJson(req, env, async () => {
       const soql = buildProcesosQuery({
-        estado: q("estado"), entidad: q("entidad"), modalidad: q("modalidad"),
-        departamento: q("departamento"), q: q("q"), desde: q("desde"),
-        hasta: q("hasta"), limit, offset,
+        estado: q("estado"),
+        entidad: q("entidad"),
+        modalidad: q("modalidad"),
+        departamento: q("departamento"),
+        q: q("q"),
+        desde: q("desde"),
+        hasta: q("hasta"),
+        limit,
+        offset,
       });
-      return pageUrls(req, page(await socrataFetch(DATASETS.procesos, soql, env), limit, offset));
+      return pageUrls(
+        req,
+        page(await socrataFetch(DATASETS.procesos, soql, env), limit, offset),
+      );
     });
   }
 
@@ -179,8 +257,12 @@ async function handleRest(req: Request, env: Env): Promise<Response> {
       `SELECT *, :id WHERE id_del_proceso = '${decodeURIComponent(mLic[1]).replace(/'/g, "''")}' LIMIT 100`,
       env,
     );
-    if (!rows.length) return Response.json({ detail: "not found" }, { status: 404 });
-    return Response.json({ id_del_proceso: decodeURIComponent(mLic[1]), filas: rows });
+    if (!rows.length)
+      return Response.json({ detail: "not found" }, { status: 404 });
+    return Response.json({
+      id_del_proceso: decodeURIComponent(mLic[1]),
+      filas: rows,
+    });
   }
 
   if (path === "/documentos/search") {
@@ -190,7 +272,11 @@ async function handleRest(req: Request, env: Env): Promise<Response> {
     const offset = num(q("offset"), 0, 1_000_000);
     return cachedJson(req, env, async () => {
       const soql = buildDocsQuery(qq, q("entidad"), limit, offset);
-      const res = page(await socrataFetch(DATASETS.docs, soql, env), limit, offset);
+      const res = page(
+        await socrataFetch(DATASETS.docs, soql, env),
+        limit,
+        offset,
+      );
       return pageUrls(req, { ...res, q: qq });
     });
   }
@@ -207,10 +293,17 @@ function providerFor(req: Request) {
     apiRoute: "/mcp",
     apiHandler: {
       fetch: (r: Request, env: Cloudflare.Env, ctx: ExecutionContext) =>
-        (createHandler(env as unknown as Env, (ctx as ExecutionContext & {props?: unknown}).props) as unknown as { fetch: (x: Request) => Promise<Response> }).fetch(r),
+        (
+          createHandler(
+            env as unknown as Env,
+            (ctx as ExecutionContext & { props?: unknown }).props,
+            new URL(r.url).origin,
+          ) as unknown as { fetch: (x: Request) => Promise<Response> }
+        ).fetch(r),
     },
     defaultHandler: {
-      fetch: (r: Request, env: Cloudflare.Env) => handleRest(r, env as unknown as Env),
+      fetch: (r: Request, env: Cloudflare.Env) =>
+        handleRest(r, env as unknown as Env),
     },
     authorizeEndpoint: "/authorize",
     tokenEndpoint: "/oauth/token",
@@ -228,4 +321,28 @@ function providerFor(req: Request) {
 export default {
   fetch: (req: Request, env: Cloudflare.Env, ctx: ExecutionContext) =>
     providerFor(req).fetch(req, env, ctx),
+  scheduled: (
+    _event: ScheduledController,
+    env: ProcessingEnv,
+    ctx: ExecutionContext,
+  ) => {
+    ctx.waitUntil(
+      Promise.all([dispatchJobs(env), sweepOriginalRetention(env)]),
+    );
+  },
+  queue: async (
+    batch: MessageBatch<{ ownerId: string; jobId: string }>,
+    env: ProcessingEnv,
+  ) => {
+    for (const message of batch.messages) {
+      try {
+        await processJob(env, message.body, (repo, job) =>
+          executeProcessingJob(repo, job, env),
+        );
+        message.ack();
+      } catch {
+        message.retry({ delaySeconds: 60 });
+      }
+    }
+  },
 };

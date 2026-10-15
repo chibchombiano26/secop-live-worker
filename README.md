@@ -101,3 +101,18 @@ before extraction. The default limits are 100 entries, 100 MiB expanded and one
 nested archive. Uploaded originals stay private in R2; one-use, 10-minute upload
 tickets associate replacements with blocked items. Protected upload pages keep
 tickets in URL fragments and remove them from history before posting bytes.
+
+Model calls use `MODEL_NAME` and either Cloudflare AI (`@cf/...`) or a fixed
+HTTPS OpenAI-compatible `MODEL_URL` with secret `MODEL_KEY`. Set
+`AI_PROVIDER_LABEL` to identify the processor on the consent screen. Defaults
+limit each processing attempt to 64 model calls and 10 minutes, each owner to
+1,000 calls/day, 30 write operations/minute and 240 reads/minute. Raise limits
+only through server configuration (`MODEL_MAX_CALLS`, `MODEL_DAILY_LIMIT`).
+Budget exhaustion is visible; stored extraction/review checkpoints are reusable.
+
+Originals are retained until explicitly removed unless
+`ORIGINAL_RETENTION_DAYS` is configured (1–3650). That option expires originals
+only, preserving extracted evidence, reports and audit history. The explicit
+company-evidence deletion operation additionally redacts the extraction and marks
+company evaluations stale; existing reports/conversations may retain quotations.
+Its API requires `confirmed:true`; explain this impact before requesting it.

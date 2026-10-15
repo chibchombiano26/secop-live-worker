@@ -31,7 +31,8 @@ resource "cloudflare_workers_script" "this" {
     ], var.enable_dossiers ? [
     { name = "DOSSIER_DB", type = "d1", id = cloudflare_d1_database.dossiers[0].id },
     { name = "DOSSIER_FILES", type = "r2_bucket", bucket_name = cloudflare_r2_bucket.dossiers[0].name },
-    { name = "DOSSIER_QUEUE", type = "queue", queue_name = cloudflare_queue.dossiers[0].queue_name }
+    { name = "DOSSIER_QUEUE", type = "queue", queue_name = cloudflare_queue.dossiers[0].queue_name },
+    { name = "AI", type = "ai" }
   ] : [], [for name, value in var.dossier_secrets : { name = name, type = "secret_text", text = value }])
 }
 
