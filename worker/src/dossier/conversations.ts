@@ -3,6 +3,7 @@ import { DossierError } from "./contracts";
 import { DossierRepository } from "./repository";
 import {
   citationSchema,
+  citationSchemaForEvidence,
   validateCitations,
   dossierEvidence,
 } from "./synthesis";
@@ -52,26 +53,49 @@ export async function generateGroundedAnswer(
   input: ModelInput,
 ) {
   let rejected: unknown;
+  const evidence = [...input.evidence];
   for (let attempt = 0; attempt < 2; attempt++) {
-    const raw = await model.generate({
+    const requestForEvidence = (): ModelInput => ({
       ...input,
-      outputSchema: input.outputSchema ?? z.toJSONSchema(answerSchema),
+      evidence: [...evidence],
+      outputSchema: z.toJSONSchema(
+        answerSchema.extend({
+          citations: z
+            .array(citationSchemaForEvidence(evidence))
+            .max(evidence.length ? 30 : 0),
+        }),
+      ),
       instructions:
         input.instructions +
-        " Each excerpt must be one short contiguous verbatim substring of a single source fragment. Never join nonadjacent fields or paragraphs, rewrite labels, or add ellipses. Use separate citations for separated facts. Omit page/section metadata not present in the source.",
-      ...(rejected
-        ? {
-            context: {
-              originalContext: input.context,
+        " Select citation excerpts verbatim from the exact source options in the output schema. Never rewrite a quotation or join unrelated passages. Use separate citations for separated facts. If the user requests a checklist, enumerate every explicitly supported item in the selected evidence, not a generic summary or 'etc'. The retrieval coverage describes a bounded selection, not an exhaustive review of every file; identify evidence still missing.",
+      context: {
+        ...(input.context && typeof input.context === "object"
+          ? input.context
+          : { originalContext: input.context }),
+        retrievalCoverage: {
+          selectedSources: evidence.length,
+          omittedSources: input.evidence.length - evidence.length,
+        },
+        ...(rejected
+          ? {
               rejectedAnswer: rejected,
               validationFeedback:
-                "A quotation was not an exact contiguous substring. Correct the citations by copying short exact substrings from the original evidence; do not join separated fields.",
-            },
-          }
-        : {}),
+                "Choose exact excerpt options from the output schema and return a corrected complete answer.",
+            }
+          : {}),
+      },
     });
+    let request = requestForEvidence();
+    // Include the schema itself in the context budget; it contains original excerpts.
+    while (JSON.stringify(request).length > 48000 && evidence.length > 1) {
+      evidence.pop();
+      request = requestForEvidence();
+    }
+    if (JSON.stringify(request).length > 48000)
+      throw new DossierError("MODEL_CONTEXT_LIMIT", 413);
+    const raw = await model.generate(request);
     try {
-      return validateAnswer(raw, input.evidence);
+      return validateAnswer(raw, evidence);
     } catch (error) {
       if (
         attempt === 1 ||
@@ -90,6 +114,12 @@ export type Conversation = {
   title: string;
   turnIds: string[];
   pending?: { key: string; until: number };
+  lastFailedRequest?: {
+    key: string;
+    expectedRevision: number;
+    turnCount: number;
+    messageHash: string;
+  };
 };
 export type ChatInput = {
   dossierId: string;
@@ -138,6 +168,7 @@ export async function answerTenderQuestion(
   } catch (e) {
     if (!(e instanceof DossierError) || e.code !== "NOT_FOUND") throw e;
   }
+  const inputMessageHash = await sha256(input.message);
   let conversation;
   try {
     conversation = await repo.read<Conversation>("conversation", id);
@@ -165,7 +196,17 @@ export async function answerTenderQuestion(
     conversation.value.companyProfileId !== input.companyProfileId
   )
     throw new DossierError("CONVERSATION_CONTEXT_MISMATCH", 403);
-  if (input.conversationId && conversation.revision !== input.expectedRevision)
+  const failedRequest = conversation.value.lastFailedRequest;
+  const isRetryingFailedRequest =
+    failedRequest?.key === input.idempotencyKey &&
+    failedRequest.expectedRevision === input.expectedRevision &&
+    failedRequest.turnCount === conversation.value.turnIds.length &&
+    failedRequest.messageHash === inputMessageHash;
+  if (
+    input.conversationId &&
+    conversation.revision !== input.expectedRevision &&
+    !isRetryingFailedRequest
+  )
     throw new DossierError("REVISION_CONFLICT", 409);
   if (
     conversation.value.pending &&
@@ -177,6 +218,7 @@ export async function answerTenderQuestion(
     id,
     {
       ...conversation.value,
+      lastFailedRequest: undefined,
       pending: { key: input.idempotencyKey, until: repo.now() + 120000 },
     },
     conversation.revision,
@@ -291,7 +333,19 @@ export async function answerTenderQuestion(
         await repo.save(
           "conversation",
           id,
-          { ...current.value, pending: undefined },
+          {
+            ...current.value,
+            pending: undefined,
+            lastFailedRequest:
+              current.value.turnIds.length === conversation.value.turnIds.length
+                ? {
+                    key: input.idempotencyKey,
+                    expectedRevision: input.expectedRevision,
+                    turnCount: current.value.turnIds.length,
+                    messageHash: inputMessageHash,
+                  }
+                : undefined,
+          },
           current.revision,
         );
     } catch {}

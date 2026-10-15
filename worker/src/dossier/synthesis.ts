@@ -47,7 +47,7 @@ const partSchema = z.object({
   conflicts: z.array(z.string().max(2000)).max(50),
 });
 /** Bind generation to real source spans; citation validation below remains authoritative. */
-function partSchemaForSource(chunk: EvidenceChunk) {
+function citationSchemaForSource(chunk: EvidenceChunk) {
   const text = chunk.text.replace(/\s+/gu, " ").trim();
   const choices: string[] = [];
   for (let start = 0; start < text.length;) {
@@ -62,7 +62,7 @@ function partSchemaForSource(chunk: EvidenceChunk) {
     const boundary = text.indexOf(" ", Math.max(start + 1, end - 80));
     start = boundary >= 0 && boundary < end ? boundary + 1 : end;
   }
-  const sourceCitation = z.object({
+  return z.object({
     documentVersionId: z.literal(chunk.documentVersionId),
     ...(chunk.page !== undefined ? { page: z.literal(chunk.page) } : {}),
     ...(chunk.section !== undefined
@@ -70,14 +70,20 @@ function partSchemaForSource(chunk: EvidenceChunk) {
       : {}),
     excerpt: z.enum(choices.length ? [...new Set(choices)] : [text]),
   });
+}
+export function citationSchemaForEvidence(chunks: EvidenceChunk[]) {
+  const sources = chunks.map(citationSchemaForSource);
+  return sources.length > 1 ? z.union(sources) : (sources[0] ?? citationSchema);
+}
+function partSchemaForSource(chunk: EvidenceChunk) {
   return partSchema.extend({
     requirements: z
       .array(
         requirementSchema.extend({
-          citations: z.array(sourceCitation).min(1).max(20),
+          citations: z.array(citationSchemaForSource(chunk)).min(1).max(20),
         }),
       )
-      .max(choices.length ? 100 : 0),
+      .max(chunk.text.trim().length >= 3 ? 100 : 0),
   });
 }
 export function validateCitations(

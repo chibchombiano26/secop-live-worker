@@ -25,6 +25,47 @@ const chunks: any[] = [
   },
 ];
 describe("grounded tender conversation", () => {
+  it("constrains chat citations to real sources and bounds duplicated source/schema context", async () => {
+    let sent: any;
+    const evidence = Array.from({ length: 9 }, (_, index) => ({
+      documentVersionId: `doc-${index}`,
+      page: index + 1,
+      index,
+      text: Array.from(
+        { length: 500 },
+        (_, word) => `Real source ${index} word ${word}. `,
+      )
+        .join("")
+        .slice(0, 4000),
+    }));
+    await generateGroundedAnswer(
+      {
+        id: "test",
+        generate: async (input) => {
+          sent = input;
+          return {
+            answer: "The available sources need review.",
+            insufficientEvidence: true,
+            citations: [],
+          };
+        },
+      },
+      { purpose: "test", evidence, instructions: "Answer from evidence" },
+    );
+    expect(JSON.stringify(sent).length).toBeLessThanOrEqual(48000);
+    const options = sent.outputSchema.properties.citations.items.anyOf;
+    expect(
+      options.every((source: any) =>
+        source.properties.documentVersionId.const.startsWith("doc-"),
+      ),
+    ).toBe(true);
+    expect(
+      options.every((source: any) => source.properties.excerpt.enum.length > 0),
+    ).toBe(true);
+    expect(sent.context.retrievalCoverage.omittedSources).toBeGreaterThan(0);
+    expect(sent.evidence.length).toBeGreaterThan(0);
+  });
+
   it("repairs a discontiguous quotation before storing an answer", async () => {
     let calls = 0;
     const model = {

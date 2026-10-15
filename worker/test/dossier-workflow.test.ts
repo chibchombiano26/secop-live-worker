@@ -560,4 +560,88 @@ describe("persisted dossier, assessment and chat workflow", () => {
     expect(turn.stale).toBe(true);
     expect(turn.corpusRevision).toBe(1);
   });
+  it("retries a failed conversation reservation only for the same unchanged request", async () => {
+    const first = await answerTenderQuestion(
+      repo,
+      {
+        dossierId: "CO1.REQ.99",
+        expectedRevision: 0,
+        message: "What experience is required?",
+        idempotencyKey: "conversation-retry-seed",
+      },
+      model,
+    );
+    const retryInput = {
+      dossierId: "CO1.REQ.99",
+      conversationId: first.conversationId,
+      expectedRevision: first.revision,
+      message: "Which delivery timeline applies?",
+      idempotencyKey: "conversation-retry-key",
+    };
+    const retryableModel: ModelProvider = {
+      ...model,
+      async generate(input) {
+        if (input.purpose === "tender_conversation")
+          throw new DossierError("MODEL_TEMPORARILY_UNAVAILABLE", 503, true);
+        return model.generate(input);
+      },
+    };
+
+    await expect(
+      answerTenderQuestion(repo, retryInput, retryableModel),
+    ).rejects.toMatchObject({ code: "MODEL_TEMPORARILY_UNAVAILABLE" });
+    const failed = await readConversation(repo, first.conversationId);
+    expect(failed.turns).toHaveLength(1);
+
+    await expect(
+      answerTenderQuestion(
+        repo,
+        { ...retryInput, idempotencyKey: "different-stale-key" },
+        model,
+      ),
+    ).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+
+    const retried = await answerTenderQuestion(repo, retryInput, model);
+    expect(retried.duplicate).toBe(false);
+    expect(
+      (await readConversation(repo, first.conversationId)).turns,
+    ).toHaveLength(2);
+    expect(
+      (await answerTenderQuestion(repo, retryInput, model)).duplicate,
+    ).toBe(true);
+    expect(
+      (await readConversation(repo, first.conversationId)).turns,
+    ).toHaveLength(2);
+
+    const intervenedRetry = {
+      ...retryInput,
+      expectedRevision: retried.revision,
+      message: "Which documents must be submitted?",
+      idempotencyKey: "conversation-retry-after-intervening-turn",
+    };
+    await expect(
+      answerTenderQuestion(repo, intervenedRetry, retryableModel),
+    ).rejects.toMatchObject({ code: "MODEL_TEMPORARILY_UNAVAILABLE" });
+    const afterSecondFailure = await readConversation(
+      repo,
+      first.conversationId,
+    );
+    const intervening = await answerTenderQuestion(
+      repo,
+      {
+        ...retryInput,
+        expectedRevision: afterSecondFailure.revision,
+        message: "When is the deadline?",
+        idempotencyKey: "conversation-intervening-turn",
+      },
+      model,
+    );
+    expect(intervening.duplicate).toBe(false);
+    await expect(
+      answerTenderQuestion(repo, intervenedRetry, model),
+    ).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    expect(
+      (await readConversation(repo, first.conversationId)).turns,
+    ).toHaveLength(3);
+  });
 });

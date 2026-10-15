@@ -109,7 +109,11 @@ tickets in URL fragments and remove them from history before posting bytes.
 Requirement extraction constrains generated citations to known source identities,
 parser pages and exact source excerpt choices. Runtime citation validation still
 rejects changed wording and restores only original whitespace. Valid cached
-fragments survive job retries.
+fragments survive job retries. Chat uses the same source-constrained citation
+choices and budgets the combined evidence/schema context; any omitted retrieval
+sources are explicit in model context. Failed chat reservations can be retried
+with the same request identity without conflicting with their own cleanup;
+stale requests after another committed turn remain rejected.
 
 Model calls use `MODEL_NAME` and either Cloudflare AI (`@cf/...`) or a fixed
 HTTPS OpenAI-compatible `MODEL_URL` with secret `MODEL_KEY`. Set
