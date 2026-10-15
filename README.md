@@ -75,3 +75,12 @@ Private scopes are `dossier:read`, `dossier:write`, `company:write`, and
 `conversation:write`. Old `mcp:read` grants keep public reads only; new scopes
 require a fresh explicit consent. OAuth approval fails if no valid code is
 configured. Public unauthenticated REST development behavior is unchanged.
+
+Private records use owner-scoped versioned D1 entities and R2 keys. Apply
+`worker/migrations/0001_dossiers.sql` before enabling private tools.
+Dossier infrastructure is opt-in (`enable_dossiers=true` in OpenTofu).
+The `dossier_secrets` map carries server-owned private/provider configuration.
+The optional Docker target remains a public proxy; private features require the
+Worker bindings and never fall back to in-memory persistence. Local integration
+tests use real Miniflare D1/R2. Durable queued jobs use leases and a persisted
+outbox; scheduled reconciliation redispatches missed or expired work each minute.

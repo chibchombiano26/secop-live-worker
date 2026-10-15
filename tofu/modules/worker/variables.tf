@@ -23,3 +23,12 @@ variable "zone_id" {
   type    = string
   default = ""
 }
+variable "enable_dossiers" {
+  type    = bool
+  default = false
+}
+variable "dossier_secrets" {
+  type      = map(string)
+  default   = {}
+  sensitive = true
+}

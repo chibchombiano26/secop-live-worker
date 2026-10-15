@@ -13,6 +13,8 @@ module "worker" {
   bundle_path       = var.worker_bundle_path
   api_keys          = var.api_keys
   socrata_app_token = var.socrata_app_token
+  enable_dossiers   = var.enable_dossiers
+  dossier_secrets   = var.dossier_secrets
   custom_hostname   = var.custom_hostname
   zone_id           = var.cloudflare_zone_id
 }

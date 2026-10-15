@@ -78,3 +78,12 @@ variable "mcp_host_port" {
   type        = number
   default     = 8101
 }
+variable "enable_dossiers" {
+  type    = bool
+  default = false
+}
+variable "dossier_secrets" {
+  type      = map(string)
+  default   = {}
+  sensitive = true
+}

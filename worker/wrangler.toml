@@ -10,3 +10,26 @@ CACHE_TTL = "600"
 [[kv_namespaces]]
 binding = "OAUTH_KV"
 id = "00000000000000000000000000000000"
+
+# Private dossier resources are opt-in: replace IDs using provisioned resources.
+# Keep these in a separate environment so public-only development still works.
+[env.dossier]
+name = "secop-live-worker-dossier"
+[[env.dossier.d1_databases]]
+binding = "DOSSIER_DB"
+database_name = "secop-dossiers"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+[[env.dossier.r2_buckets]]
+binding = "DOSSIER_FILES"
+bucket_name = "secop-dossier-files"
+[[env.dossier.queues.producers]]
+binding = "DOSSIER_QUEUE"
+queue = "secop-dossier-jobs"
+[[env.dossier.queues.consumers]]
+queue = "secop-dossier-jobs"
+max_batch_size = 1
+max_retries = 5
+dead_letter_queue = "secop-dossier-dead-letter"
+[env.dossier.triggers]
+crons = ["* * * * *"]

@@ -12,7 +12,7 @@ resource "cloudflare_workers_script" "this" {
   compatibility_date  = "2026-10-01"
   compatibility_flags = ["global_fetch_strictly_public"]
 
-  bindings = [
+  bindings = concat([
     {
       name = "API_KEYS"
       type = "secret_text"
@@ -28,7 +28,11 @@ resource "cloudflare_workers_script" "this" {
       type         = "kv_namespace"
       namespace_id = cloudflare_workers_kv_namespace.oauth.id
     },
-  ]
+    ], var.enable_dossiers ? [
+    { name = "DOSSIER_DB", type = "d1", id = cloudflare_d1_database.dossiers[0].id },
+    { name = "DOSSIER_FILES", type = "r2_bucket", bucket_name = cloudflare_r2_bucket.dossiers[0].name },
+    { name = "DOSSIER_QUEUE", type = "queue", queue_name = cloudflare_queue.dossiers[0].queue_name }
+  ] : [], [for name, value in var.dossier_secrets : { name = name, type = "secret_text", text = value }])
 }
 
 resource "cloudflare_workers_script_subdomain" "this" {
