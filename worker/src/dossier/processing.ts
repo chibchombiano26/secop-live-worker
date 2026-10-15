@@ -89,8 +89,11 @@ export async function executeProcessingJob(
   env: ProcessingEnv,
   adapters?: { model?: ModelProvider; extractor?: ExtractionProvider },
 ) {
-  const checkpoint = async (progress: Record<string, unknown> = {}) =>
-    repo.checkpointJob(job.id, job.lease!, { ...job.progress, ...progress });
+  let latestProgress={...job.progress};
+  const checkpoint = async (progress: Record<string, unknown> = {}) => {
+    latestProgress={...latestProgress,...progress};
+    await repo.checkpointJob(job.id, job.lease!, latestProgress);
+  };
   const model = () =>
     adapters?.model ??
     new ConfiguredModel(
@@ -153,11 +156,13 @@ export async function executeProcessingJob(
     }
     case "synthesize": {
       const dossier = await repo.readDossier(job.targetId);
+      const provider = model();
+      await checkpoint({ stage: "analyzing_documents", model: provider.id });
       const result = await synthesizeDossier(
         repo,
         job.targetId,
         Number(dossier.value.corpusRevision),
-        model(),
+        provider,
       );
       await checkpoint({
         stage: "analyzed",

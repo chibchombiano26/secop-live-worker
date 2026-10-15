@@ -19,10 +19,61 @@ const chunks: EvidenceChunk[] = [
   },
 ];
 describe("grounded cross-document synthesis", () => {
+  it("bounds dense extraction fragments while visiting the final source text", async () => {
+    const visited: string[] = [];
+    await extractRequirements(
+      [
+        {
+          documentVersionId: "long",
+          page: 1,
+          index: 0,
+          text: "Background ".repeat(450) + "FINAL REQUIREMENT",
+        },
+      ],
+      {
+        id: "test",
+        generate: async (input) => {
+          visited.push(input.evidence[0].text);
+          return { summary: "source", requirements: [], conflicts: [] };
+        },
+      },
+    );
+    expect(visited.every((t) => t.length <= 2000)).toBe(true);
+    expect(visited.some((t) => t.includes("FINAL REQUIREMENT"))).toBe(true);
+  });
   it("restores exact source whitespace without accepting changed wording", () => {
-    const source=[{documentVersionId:"scan",page:1,text:"Required experience:\n  three contracts.",index:0}];
-    expect(validateCitations([{documentVersionId:"scan",page:1,excerpt:"experience: three contracts"}],source)[0].excerpt).toBe("experience:\n  three contracts");
-    expect(()=>validateCitations([{documentVersionId:"scan",page:1,excerpt:"experience: four contracts"}],source)).toThrow("INVALID_CITATION");
+    const source = [
+      {
+        documentVersionId: "scan",
+        page: 1,
+        text: "Required experience:\n  three contracts.",
+        index: 0,
+      },
+    ];
+    expect(
+      validateCitations(
+        [
+          {
+            documentVersionId: "scan",
+            page: 1,
+            excerpt: "experience: three contracts",
+          },
+        ],
+        source,
+      )[0].excerpt,
+    ).toBe("experience:\n  three contracts");
+    expect(() =>
+      validateCitations(
+        [
+          {
+            documentVersionId: "scan",
+            page: 1,
+            excerpt: "experience: four contracts",
+          },
+        ],
+        source,
+      ),
+    ).toThrow("INVALID_CITATION");
   });
   it("checks excerpts, versions and actual parser pages", () => {
     expect(

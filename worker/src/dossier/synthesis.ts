@@ -95,7 +95,18 @@ export async function extractRequirements(
   },
 ) {
   const parts: z.infer<typeof partSchema>[] = [];
-  for (const chunk of chunks) {
+  // Dense pages can produce more output than one bounded inference can finish.
+  // Keep original version/page metadata and cover the complete text with overlap.
+  const fragments = chunks.flatMap((chunk) => {
+    if (chunk.text.length <= 2000) return [chunk];
+    const output: EvidenceChunk[] = [];
+    for (let offset = 0; offset < chunk.text.length; offset += 1500) {
+      output.push({ ...chunk, text: chunk.text.slice(offset, offset + 2000) });
+      if (offset + 2000 >= chunk.text.length) break;
+    }
+    return output;
+  });
+  for (const chunk of fragments) {
     const key = await sha256(`${model.id}:${JSON.stringify(chunk)}`);
     const cached = await cache?.get(key);
     let result: z.infer<typeof partSchema> | undefined;
