@@ -76,13 +76,13 @@ export function createHandler(env: Env) {
       description: "Complete SECOP department, entity and modality catalogs.",
       inputSchema: { campo: z.enum(["departamento", "entidad", "modalidad"]) },
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
-    }, async ({ campo }) => ({ content: [{ type: "text", text: JSON.stringify({ data: [await readSecopCatalog(campo, { env, dataset: DATASETS.procesos, socrataFetch })] }) }] }));
+    }, async ({ campo }) => ({ content: [{ type: "text", text: JSON.stringify({ data: [await readSecopCatalog(campo, { env, dataset: DATASETS.procesos, socrataFetch, stringSchema: () => z.string() })] }) }] }));
     server.registerTool("documentos_licitacion", {
       description: "Official documents linked by exact tender portfolio identity.",
       inputSchema: { id_del_proceso: z.string(), limit: z.number().int().min(1).max(100).optional(), offset: z.number().int().min(0).max(10000).optional() },
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     }, async (input) => {
-      const result = await readSecopDocuments(input, { env, tenderDataset: DATASETS.procesos, documentsDataset: DATASETS.docs, socrataFetch });
+      const result = await readSecopDocuments(input, { env, tenderDataset: DATASETS.procesos, documentsDataset: DATASETS.docs, socrataFetch, stringSchema: () => z.string(), numberSchema: () => z.number() });
       if (result.association.status !== "verified") throw new Error("The tender document association could not be verified.");
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     });
