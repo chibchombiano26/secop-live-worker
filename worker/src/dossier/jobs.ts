@@ -53,6 +53,21 @@ export async function processJob(
         event: "dossier_job_failure",
         kind: job.kind,
         code: failure.code,
+        ...(failure.code === "PROCESSING_FAILED" && error instanceof Error
+          ? {
+              failureClass: error.name,
+              stackFrames: error.stack?.split("\n").slice(1, 5),
+              category: /too many|limit/i.test(error.message)
+                ? "provider_limit"
+                : /D1|SQLITE/i.test(error.message)
+                  ? "database"
+                  : /AI|inference/i.test(error.message)
+                    ? "inference"
+                    : /abort|timeout/i.test(error.message)
+                      ? "timeout"
+                      : "unknown",
+            }
+          : {}),
         ...(error instanceof ZodError
           ? { validationPaths: error.issues.map((i) => i.path.join(".")) }
           : {}),

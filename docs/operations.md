@@ -20,11 +20,10 @@ R2, Queues or private credentials. Savia's server does not implement this featur
    claim complete OCR for every scanned page. Test PDF, scanned/unsupported, Office
    and archive behavior before advertising coverage.
 4. Configure MODEL_NAME and AI for a Cloudflare model, or MODEL_URL/MODEL_KEY for
-   the selected HTTPS OpenAI-compatible provider. MODEL_MAX_CALLS defaults to 64
+   the selected HTTPS OpenAI-compatible provider. The Preview rollout uses `@cf/meta/llama-3.3-70b-instruct-fp8-fast` with MODEL_MAX_INPUT_CHARS=50000 to leave room for output within its context window. Requirement extraction visits every source chunk; cross-document groups and chat retrieval use bounded inputs. An oversized input fails visibly rather than truncating source text. MODEL_MAX_CALLS defaults to 64
    per attempt, MODEL_DAILY_LIMIT to 1000 per owner. Long corpora yield between bounded attempts and resume from checkpoints; daily
    model budget exhaustion waits visibly until the next UTC budget window. Validate the actual selected model's context
-   window against the 120000-character request ceiling. The validation setup uses
-   `@cf/meta/llama-4-scout-17b-16e-instruct`, not the smaller-context 70B default.
+   window against MODEL_MAX_INPUT_CHARS and the output allowance. The service ceiling is 120000 characters; each deployment may lower it.
 5. Provision a separate opaque owner per Savia workspace. Generate high-entropy
    access codes and REST bearer credentials using a cryptographic RNG. Store only
    their HMAC-SHA256 purpose-separated digests in secret PRIVATE_CONNECTIONS and

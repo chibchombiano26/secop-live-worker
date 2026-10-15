@@ -1,7 +1,11 @@
 import { sweepOriginalRetention } from "./dossier/retention";
 import { privateApiRequest } from "./dossier/api";
 import { dispatchJobs, processJob } from "./dossier/jobs";
-import { executeProcessingJob, type ProcessingEnv } from "./dossier/processing";
+import {
+  executeProcessingJob,
+  recoverTerminalExtractions,
+  type ProcessingEnv,
+} from "./dossier/processing";
 import { authorizePrivateCode } from "./dossier/authorization";
 import { PRIVATE_SCOPES } from "./dossier/contracts";
 import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
@@ -327,7 +331,11 @@ export default {
     ctx: ExecutionContext,
   ) => {
     ctx.waitUntil(
-      Promise.all([dispatchJobs(env), sweepOriginalRetention(env)]),
+      Promise.all([
+        dispatchJobs(env),
+        sweepOriginalRetention(env),
+        recoverTerminalExtractions(env),
+      ]),
     );
   },
   queue: async (

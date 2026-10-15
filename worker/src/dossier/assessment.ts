@@ -166,7 +166,7 @@ export async function assessCompany(
             .length,
         }))
         .sort((a, b) => b.score - a.score);
-      const evidence = ranked.slice(0, 12).map((c) => c.chunk);
+      const evidence = ranked.slice(0, 6).map((c) => c.chunk);
       const raw = await model.generate({
         purpose: "company_fit",
         outputSchema: z.toJSONSchema(findingSchema),

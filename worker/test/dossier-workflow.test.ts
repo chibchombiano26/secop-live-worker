@@ -1,3 +1,8 @@
+import {
+  executeProcessingJob,
+  recoverTerminalExtractions,
+} from "../src/dossier/processing";
+import { DossierError } from "../src/dossier/contracts";
 import { executePrivateOperation } from "../src/dossier/api";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
@@ -125,6 +130,97 @@ beforeAll(async () => {
 });
 afterAll(async () => mf?.dispose());
 describe("persisted dossier, assessment and chat workflow", () => {
+  it("publishes a partial dossier after extraction exhausts its retries", async () => {
+    const dossier = await repo.createOrGetDossier("CO1.REQ.77");
+    await repo.save(
+      "dossier",
+      dossier.id,
+      {
+        ...dossier.value,
+        corpusRevision: 1,
+        documentIds: ["terminal-document"],
+      },
+      dossier.revision,
+    );
+    await repo.save(
+      "document",
+      "terminal-document",
+      {
+        dossierId: dossier.id,
+        processId: dossier.id,
+        sourceId: "terminal",
+        name: "terminal.pdf",
+        url: null,
+        fileId: "terminal-document",
+        corpusRevision: 1,
+        state: "pending",
+      },
+      0,
+    );
+    await repo.putFile(
+      "terminal-document",
+      new TextEncoder().encode("%PDF-1.7 terminal fixture"),
+      "application/pdf",
+    );
+    const queued = await repo.enqueueJob({
+      kind: "extract",
+      targetId: "terminal-document",
+      key: "terminal-extraction",
+    });
+    const claimed = await repo.claimJob(queued.id);
+    await expect(
+      executeProcessingJob(repo, { ...claimed!, attempts: 5 }, repo.env, {
+        extractor: {
+          extract: async () => {
+            throw new DossierError("EXTRACTION_FAILED", 502, true);
+          },
+        },
+      }),
+    ).rejects.toThrow("EXTRACTION_FAILED");
+    expect(
+      (await repo.read<any>("document", "terminal-document")).value.state,
+    ).toBe("failed");
+    expect(
+      (await repo.listDispatchableJobs()).some(
+        (j) => j.kind === "synthesize" && j.targetId === dossier.id,
+      ),
+    ).toBe(true);
+    const current = await repo.readDossier(dossier.id);
+    await repo.save(
+      "dossier",
+      dossier.id,
+      {
+        ...current.value,
+        documentIds: ["terminal-document", "abandoned-document"],
+      },
+      current.revision,
+    );
+    await repo.save(
+      "document",
+      "abandoned-document",
+      {
+        dossierId: dossier.id,
+        processId: dossier.id,
+        sourceId: "abandoned",
+        name: "abandoned.pdf",
+        url: null,
+        corpusRevision: 1,
+        state: "pending",
+      },
+      0,
+    );
+    const abandoned = await repo.enqueueJob({
+      kind: "extract",
+      targetId: "abandoned-document",
+      key: "abandoned-extraction",
+    });
+    const lease = await repo.claimJob(abandoned.id);
+    await repo.failJob(abandoned.id, lease!.lease!, "RETRY_LIMIT", false);
+    await recoverTerminalExtractions(repo.env);
+    expect(
+      (await repo.read<any>("document", "abandoned-document")).value.state,
+    ).toBe("failed");
+  });
   it("rejects an assessment idempotency key reused for changed input revisions", async () => {
     const dossier = await repo.createOrGetDossier("CO1.REQ.88");
     const company = await saveCompanyProfile(

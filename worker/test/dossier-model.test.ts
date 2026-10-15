@@ -36,6 +36,16 @@ describe("configured model boundaries", () => {
       response_format: { type: "json_schema", json_schema: schema },
     });
   });
+  it("honors a smaller configured provider context budget", async () => {
+    const model = new ConfiguredModel({
+      MODEL_NAME: "@cf/test",
+      MODEL_MAX_INPUT_CHARS: "50000",
+      AI: { run: async () => ({ response: {} }) },
+    });
+    await expect(
+      model.generate({ ...input, instructions: "x".repeat(50001) }),
+    ).rejects.toThrow("MODEL_CONTEXT_LIMIT");
+  });
   it("enforces explicit call and context budgets", async () => {
     const model = new ConfiguredModel({
       MODEL_NAME: "@cf/test",

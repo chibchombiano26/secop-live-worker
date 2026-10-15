@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { retrieveEvidence, validateAnswer } from "../src/dossier/conversations";
+import {
+  retrieveEvidence,
+  validateAnswer,
+  generateGroundedAnswer,
+} from "../src/dossier/conversations";
 const chunks: any[] = [
   {
     documentVersionId: "pliego",
@@ -21,6 +25,33 @@ const chunks: any[] = [
   },
 ];
 describe("grounded tender conversation", () => {
+  it("repairs a discontiguous quotation before storing an answer", async () => {
+    let calls = 0;
+    const model = {
+      id: "test",
+      generate: async () => ({
+        answer: "Requiere experiencia.",
+        insufficientEvidence: false,
+        citations: [
+          {
+            documentVersionId: "pliego",
+            page: 1,
+            excerpt:
+              ++calls === 1
+                ? "Se requieren tres contratos. experiencia."
+                : "tres contratos de experiencia",
+          },
+        ],
+      }),
+    };
+    const result = await generateGroundedAnswer(model, {
+      purpose: "test",
+      evidence: chunks,
+      instructions: "Answer with citations",
+    });
+    expect(calls).toBe(2);
+    expect(result.citations[0].excerpt).toBe("tres contratos de experiencia");
+  });
   it("ranks the question against original evidence", () => {
     expect(
       retrieveEvidence(chunks, "¿Cuál es el índice mínimo de liquidez?")[0]

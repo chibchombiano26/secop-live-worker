@@ -1,6 +1,6 @@
 import { extractCompanyFacts } from "./company-facts";
 import { consumeOwnerLimit } from "./limits";
-import { DossierError } from "./contracts";
+import { DossierError, PRIVATE_SCOPES } from "./contracts";
 import { DossierRepository, type Job } from "./repository";
 import {
   refreshInventory,
@@ -41,6 +41,47 @@ export async function enqueueSynthesisWhenReady(
     targetId: dossierId,
     key: `synthesis:${dossierId}:${dossier.value.corpusRevision}`,
   });
+}
+async function enqueueAfterExtraction(
+  repo: DossierRepository,
+  document: DocumentVersion,
+) {
+  if (!document.dossierId.startsWith("company:"))
+    await enqueueSynthesisWhenReady(repo, document.dossierId);
+  else {
+    const companyId = document.dossierId.slice(8);
+    const company = await repo.read("company", companyId);
+    const docs = (await repo.all<DocumentVersion>("document")).filter(
+      (d) => d.value.dossierId === document.dossierId,
+    );
+    if (!docs.some((d) => d.value.state === "pending"))
+      await repo.enqueueJob({
+        kind: "company_facts",
+        targetId: companyId,
+        key: `company-facts:${companyId}:${company.revision}`,
+      });
+  }
+}
+export async function recoverTerminalExtractions(env: ProcessingEnv) {
+  if (!env.DOSSIER_DB || !env.DOSSIER_FILES) return;
+  const rows = await env.DOSSIER_DB.prepare(
+    "SELECT DISTINCT r.owner_id AS ownerId,r.id AS documentId FROM dossier_records r JOIN dossier_jobs j ON j.owner_id=r.owner_id AND j.target_id=r.id AND j.kind='extract' WHERE r.kind='document' AND json_extract(r.value,'$.state')='pending' AND j.state='failed' AND NOT EXISTS(SELECT 1 FROM dossier_jobs active WHERE active.owner_id=r.owner_id AND active.target_id=r.id AND active.kind='extract' AND active.state IN ('queued','running')) LIMIT 50",
+  ).all<{ ownerId: string; documentId: string }>();
+  for (const row of rows.results) {
+    const repo = new DossierRepository(env, {
+      ownerId: row.ownerId,
+      scopes: [...PRIVATE_SCOPES],
+    });
+    const doc = await repo.read<DocumentVersion>("document", row.documentId);
+    if (doc.value.state !== "pending") continue;
+    await repo.save(
+      "document",
+      doc.id,
+      { ...doc.value, state: "failed", error: "EXTRACTION_RETRIES_EXHAUSTED" },
+      doc.revision,
+    );
+    await enqueueAfterExtraction(repo, doc.value);
+  }
 }
 export async function executeProcessingJob(
   repo: DossierRepository,
@@ -93,29 +134,20 @@ export async function executeProcessingJob(
           checkpoint({ stage: "extracting", documentId: doc.id }),
         );
       } catch (e) {
-        if (
-          !doc.value.dossierId.startsWith("company:") &&
-          e instanceof DossierError &&
-          !e.retryable
-        )
-          await enqueueSynthesisWhenReady(repo, doc.value.dossierId);
+        if (e instanceof DossierError && (!e.retryable || job.attempts >= 5)) {
+          const current = await repo.read<DocumentVersion>("document", doc.id);
+          if (current.value.state === "pending")
+            await repo.save(
+              "document",
+              doc.id,
+              { ...current.value, state: "failed", error: e.code },
+              current.revision,
+            );
+          await enqueueAfterExtraction(repo, doc.value);
+        }
         throw e;
       }
-      if (!doc.value.dossierId.startsWith("company:"))
-        await enqueueSynthesisWhenReady(repo, doc.value.dossierId);
-      else {
-        const companyId = doc.value.dossierId.slice(8);
-        const company = await repo.read("company", companyId);
-        const docs = (await repo.all<DocumentVersion>("document")).filter(
-          (d) => d.value.dossierId === doc.value.dossierId,
-        );
-        if (!docs.some((d) => d.value.state === "pending"))
-          await repo.enqueueJob({
-            kind: "company_facts",
-            targetId: companyId,
-            key: `company-facts:${companyId}:${company.revision}`,
-          });
-      }
+      await enqueueAfterExtraction(repo, doc.value);
       await checkpoint({ documentId: doc.id, stage: "extracted" });
       return;
     }
