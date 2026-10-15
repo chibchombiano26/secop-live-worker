@@ -19,6 +19,28 @@ const chunks: EvidenceChunk[] = [
   },
 ];
 describe("grounded cross-document synthesis", () => {
+  it("constrains generated citations to the actual source identity, page and exact excerpt choices", async () => {
+    let schema: any;
+    await extractRequirements([chunks[0]], {
+      id: "test",
+      generate: async (input) => {
+        schema = input.outputSchema;
+        return { summary: "source", requirements: [], conflicts: [] };
+      },
+    });
+    const citation =
+      schema.properties.requirements.items.properties.citations.items;
+    expect(citation.properties.documentVersionId.const).toBe("pliego");
+    expect(citation.properties.page.const).toBe(2);
+    expect(citation.required).toContain("page");
+    expect(citation.properties.section).toBeUndefined();
+    const options = citation.properties.excerpt.enum;
+    expect(options.length).toBeGreaterThan(0);
+    expect(options.every((text: string) => chunks[0].text.includes(text))).toBe(
+      true,
+    );
+  });
+
   it("bounds dense extraction fragments while visiting the final source text", async () => {
     const visited: string[] = [];
     await extractRequirements(

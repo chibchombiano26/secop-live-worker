@@ -106,6 +106,11 @@ nested archive. Uploaded originals stay private in R2; one-use, 10-minute upload
 tickets associate replacements with blocked items. Protected upload pages keep
 tickets in URL fragments and remove them from history before posting bytes.
 
+Requirement extraction constrains generated citations to known source identities,
+parser pages and exact source excerpt choices. Runtime citation validation still
+rejects changed wording and restores only original whitespace. Valid cached
+fragments survive job retries.
+
 Model calls use `MODEL_NAME` and either Cloudflare AI (`@cf/...`) or a fixed
 HTTPS OpenAI-compatible `MODEL_URL` with secret `MODEL_KEY`. Set
 `AI_PROVIDER_LABEL` to identify the processor on the consent screen. Defaults
