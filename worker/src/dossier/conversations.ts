@@ -138,6 +138,7 @@ type ChatTurn = z.infer<typeof answerSchema> & {
   corpusRevision: number;
   companyRevision: number | null;
   stale: boolean;
+  analysisPending: boolean;
   model: string;
   retrieval: Record<string, unknown>;
   at: number;
@@ -318,14 +319,14 @@ export async function answerTenderQuestion(
       : null;
     const stale =
       latest.value.corpusRevision !== dossier.value.corpusRevision ||
-      latestCompany?.revision !== company?.company.revision ||
-      Boolean(latest.value.needsSynthesis);
+      latestCompany?.revision !== company?.company.revision;
     const turn = {
       ...output,
       userMessage: input.message,
       corpusRevision: Number(dossier.value.corpusRevision),
       companyRevision: company?.company.revision ?? null,
       stale,
+      analysisPending: Boolean(latest.value.needsSynthesis),
       model: model.id,
       retrieval: retrieved.retrieval,
       at: repo.now(),
@@ -387,10 +388,35 @@ export async function readConversation(
   cursor?: number,
 ) {
   const conversation = await repo.read<Conversation>("conversation", id);
+  const dossier = await repo.readDossier(conversation.value.dossierId);
+  let companyRevision: number | null = null;
+  if (conversation.value.companyProfileId) {
+    try {
+      companyRevision = (
+        await repo.read("company", conversation.value.companyProfileId)
+      ).revision;
+    } catch (error) {
+      if (!(error instanceof DossierError) || error.code !== "NOT_FOUND")
+        throw error;
+      companyRevision = -1;
+    }
+  }
   const start = cursor ?? Math.max(0, conversation.value.turnIds.length - 20);
   const ids = conversation.value.turnIds.slice(start, start + 20);
   const turns = await Promise.all(
-    ids.map((turn) => repo.read("message", turn)),
+    ids.map(async (id) => {
+      const turn = await repo.read<ChatTurn>("message", id);
+      return {
+        ...turn,
+        value: {
+          ...turn.value,
+          stale:
+            turn.value.corpusRevision !== dossier.value.corpusRevision ||
+            turn.value.companyRevision !== companyRevision,
+          analysisPending: Boolean(dossier.value.needsSynthesis),
+        },
+      };
+    }),
   );
   return {
     ...conversation,

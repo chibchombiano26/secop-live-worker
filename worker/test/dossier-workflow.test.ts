@@ -794,4 +794,65 @@ describe("persisted dossier, assessment and chat workflow", () => {
     expect((stored.turns[0].value as any).retrieval.mode).toBe("hybrid");
     expect(result.citations[0].documentVersionId).toBe("rag-current");
   });
+  it("separates pending analysis from source freshness for new and historical answers", async () => {
+    const d = await repo.createOrGetDossier("CO1.REQ.990002");
+    await repo.save(
+      "dossier",
+      d.id,
+      {
+        ...d.value,
+        corpusRevision: 6,
+        state: "partial",
+        needsSynthesis: true,
+        reportId: "freshness-report",
+      },
+      d.revision,
+    );
+    await repo.save(
+      "report",
+      "freshness-report",
+      { corpusRevision: 1, summary: "Old report" },
+      0,
+    );
+    const answer = await answerTenderQuestion(
+      repo,
+      {
+        dossierId: d.id,
+        expectedRevision: 0,
+        message: "What experience is required?",
+        idempotencyKey: "source-freshness-pending",
+      },
+      model,
+    );
+    expect(answer.stale).toBe(false);
+    expect(answer.analysisPending).toBe(true);
+
+    const raw = await repo.read<any>("message", answer.turnId);
+    await repo.save(
+      "message",
+      raw.id,
+      { ...raw.value, stale: true },
+      raw.revision,
+    );
+    const current = await readConversation(repo, answer.conversationId);
+    expect(current.turns[0].value.stale).toBe(false);
+    expect(current.turns[0].value.analysisPending).toBe(true);
+    expect((await repo.read<any>("message", raw.id)).value.stale).toBe(true);
+
+    const latest = await repo.readDossier(d.id);
+    await repo.save(
+      "dossier",
+      d.id,
+      {
+        ...latest.value,
+        corpusRevision: 7,
+        needsSynthesis: false,
+        state: "analyzed",
+      },
+      latest.revision,
+    );
+    const changed = await readConversation(repo, answer.conversationId);
+    expect(changed.turns[0].value.stale).toBe(true);
+    expect(changed.turns[0].value.analysisPending).toBe(false);
+  });
 });

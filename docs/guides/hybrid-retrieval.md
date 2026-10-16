@@ -107,3 +107,13 @@ When the source version or canonical corpus changes, use a new generation and
 namespace. Old namespaces become unreachable through current-corpus retrieval
 but remain stored until an administrator applies the configured retention
 policy. This change does not perform live cleanup or deletion.
+
+## Answer freshness and pending analysis
+
+The conversation API derives each answer's `stale` flag from its source corpus
+revision and selected company revision compared with the current records.
+It recalculates this when reading history, including older answers that stored
+an incorrect flag, without rewriting their original audit records. A pending
+joint report does not make an answer based on current source documents stale.
+The separate `analysisPending` flag describes whether joint synthesis is still
+needed. Partial coverage and manual OCR review remain separate limitations.
