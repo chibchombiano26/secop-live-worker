@@ -4,6 +4,7 @@ import {
   validateAnswer,
   generateGroundedAnswer,
 } from "../src/dossier/conversations";
+import { isExhaustiveChecklistRequest } from "../src/dossier/checklist";
 const chunks: any[] = [
   {
     documentVersionId: "pliego",
@@ -25,6 +26,20 @@ const chunks: any[] = [
   },
 ];
 describe("grounded tender conversation", () => {
+  it("routes explicit exhaustive requirement requests to the complete checklist", () => {
+    expect(
+      isExhaustiveChecklistRequest("Enumera todos los requisitos del pliego"),
+    ).toBe(true);
+    expect(
+      isExhaustiveChecklistRequest("Give me every requirement as a checklist"),
+    ).toBe(true);
+    expect(
+      isExhaustiveChecklistRequest("Make a checklist of requirements"),
+    ).toBe(true);
+    expect(isExhaustiveChecklistRequest("What experience is required?")).toBe(
+      false,
+    );
+  });
   it("does not present an uncited retrieval miss as proof that a requirement is absent", () => {
     const result = validateAnswer(
       {

@@ -26,6 +26,7 @@ import {
   readConversation,
 } from "../src/dossier/conversations";
 import type { ModelProvider } from "../src/dossier/model";
+import { renderExhaustiveChecklist } from "../src/dossier/checklist";
 let mf: Miniflare, repo: DossierRepository;
 let now = Date.parse("2026-10-15T12:00:00Z");
 const model: ModelProvider = {
@@ -946,5 +947,160 @@ describe("persisted dossier, assessment and chat workflow", () => {
     const calls = inputSizes.length;
     await synthesizeDossier(repo, d.id, 1, provider);
     expect(inputSizes).toHaveLength(calls);
+    const sourceToReview = await repo.read<any>("document", documentIds[0]);
+    await repo.save(
+      "document",
+      documentIds[0],
+      { ...sourceToReview.value, state: "review_required", warnings: [] },
+      sourceToReview.revision,
+    );
+
+    let checklistModelCalls = 0;
+    const checklistAnswer = await answerTenderQuestion(
+      repo,
+      {
+        dossierId: d.id,
+        expectedRevision: 0,
+        message:
+          "Enumera todos los requisitos del pliego en una lista completa",
+        idempotencyKey: "complete-checklist-213",
+      },
+      {
+        ...provider,
+        async generate(input) {
+          if (input.purpose === "tender_conversation") checklistModelCalls++;
+          return model.generate(input);
+        },
+      },
+    );
+    expect(checklistModelCalls).toBe(0);
+    expect(checklistAnswer.checklist?.coverage).toMatchObject({
+      requirements: 213,
+      citedRequirements: 213,
+      inventoryComplete: true,
+      listedDocuments: 2,
+      reviewRequiredDocuments: 1,
+      unavailableDocuments: 0,
+    });
+    expect(checklistAnswer.checklist?.items).toHaveLength(213);
+    expect(checklistAnswer.checklist?.items[0].wording).toContain(
+      "Requirement 0:",
+    );
+    expect(checklistAnswer.checklist?.items[212].wording).toContain(
+      "FINAL_REQUIREMENT",
+    );
+    expect(checklistAnswer.answer).toContain("R213");
+    expect(checklistAnswer.answer).toContain("FINAL_REQUIREMENT");
+    expect(checklistAnswer.answerMarkdown).toBe(checklistAnswer.answer);
+    expect(checklistAnswer.answerMarkdown).toContain("S213");
+    expect(checklistAnswer.answerMarkdown).toContain("### Experiencia (213)");
+    expect(checklistAnswer.answerMarkdown).not.toContain("### R213");
+    const lastCitation = checklistAnswer.checklist?.items[212].citations[0];
+    expect(
+      checklistAnswer.checklist?.sources.find(
+        (source) => source.reference === lastCitation?.sourceRef,
+      )?.excerpt,
+    ).toBe(checklistAnswer.checklist?.items[212].wording);
+    const compactRender = renderExhaustiveChecklist(
+      checklistAnswer.checklist!,
+      { includeSourceExcerpts: false },
+    );
+    expect(compactRender).not.toContain("Fragmentos de las fuentes");
+    expect(compactRender).toContain("R213");
+    expect(
+      new Set(
+        checklistAnswer.checklist?.sources.map(
+          (source) => source.documentVersionId,
+        ),
+      ),
+    ).toEqual(new Set(documentIds));
+    expect(checklistAnswer.answer).not.toContain("Confidential");
+    expect(checklistAnswer.answer).toContain(
+      "No hay un perfil de empresa asociado",
+    );
+    const reloadedChecklist = await readConversation(
+      repo,
+      checklistAnswer.conversationId,
+    );
+    expect(
+      (reloadedChecklist.turns[0].value as any).checklist.items,
+    ).toHaveLength(213);
+
+    const currentReport = await repo.read<any>("report", `${d.id}:1`);
+    await repo.save(
+      "report",
+      currentReport.id,
+      { ...currentReport.value, corpusRevision: 2 },
+      currentReport.revision,
+    );
+    await expect(
+      answerTenderQuestion(
+        repo,
+        {
+          dossierId: d.id,
+          expectedRevision: 0,
+          message: "List every requirement in the tender",
+          idempotencyKey: "complete-checklist-stale-report",
+        },
+        provider,
+      ),
+    ).rejects.toMatchObject({ code: "CHECKLIST_STALE_REPORT" });
+
+    await repo.save(
+      "report",
+      currentReport.id,
+      { ...currentReport.value, corpusRevision: 1 },
+      currentReport.revision + 1,
+    );
+    const firstRequirement = report.requirementIds[0];
+    const savedFirstRequirement = await repo.read<any>(
+      "requirement",
+      firstRequirement,
+    );
+    await repo.save(
+      "requirement",
+      firstRequirement,
+      { ...savedFirstRequirement.value, corpusRevision: 2 },
+      savedFirstRequirement.revision,
+    );
+    await expect(
+      answerTenderQuestion(
+        repo,
+        {
+          dossierId: d.id,
+          expectedRevision: 0,
+          message: "Enumera todos los requisitos",
+          idempotencyKey: "complete-checklist-stale-requirement",
+        },
+        provider,
+      ),
+    ).rejects.toMatchObject({ code: "CHECKLIST_STALE_REQUIREMENT" });
+    await repo.save(
+      "requirement",
+      firstRequirement,
+      savedFirstRequirement.value,
+      savedFirstRequirement.revision + 1,
+    );
+    for (const id of report.requirementIds) {
+      const record = await repo.read<any>("requirement", id);
+      await repo.save(
+        "requirement",
+        id,
+        { ...record.value, wording: "X".repeat(4000) },
+        record.revision,
+      );
+    }
+    await expect(
+      answerTenderQuestion(
+        repo,
+        {
+          dossierId: d.id,
+          expectedRevision: 0,
+          message: "List all requirements completely",
+          idempotencyKey: "complete-checklist-output-limit",
+        },
+        provider,
+      ),
+    ).rejects.toMatchObject({ code: "CHECKLIST_OUTPUT_LIMIT", status: 413 });
   }, 20000);
 });

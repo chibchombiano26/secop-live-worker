@@ -1,3 +1,7 @@
+import {
+  assistantProviderSchema,
+  runAssistantProvider,
+} from "./assistant-provider";
 import { consumeOwnerLimit } from "./limits";
 import { z } from "zod/v4";
 import {
@@ -27,6 +31,12 @@ const page = {
   limit: z.coerce.number().int().min(1).max(100).default(20),
 };
 const routes = {
+  assistant: {
+    method: "POST",
+    scope: "dossier:read",
+    tool: "asistente_expediente",
+    schema: assistantProviderSchema,
+  },
   prepare: {
     method: "POST",
     scope: "dossier:write",
@@ -259,14 +269,22 @@ export async function executePrivateOperation(
   requirePrivateContext(context, route.scope);
   const input = route.schema.parse(raw);
   const repo = new DossierRepository(env, context);
+  const readRequest = route.method === "GET" || name === "assistant";
   await consumeOwnerLimit(
     repo,
-    route.method === "GET" ? "read" : "write",
-    route.method === "GET" ? 240 : 30,
+    readRequest ? "read" : "write",
+    readRequest ? 240 : 30,
     60000,
   );
   // Every branch parses the same shared schema again for a precise discriminated type.
   switch (name) {
+    case "assistant":
+      return runAssistantProvider(
+        repo,
+        assistantProviderSchema.parse(input),
+        (args): Promise<unknown> =>
+          executePrivateOperation(env, context, "chat", args, origin),
+      );
     case "prepare": {
       const a = routes.prepare.schema.parse(input);
       const dossier = await repo.createOrGetDossier(a.processId);

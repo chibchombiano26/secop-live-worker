@@ -33,3 +33,21 @@ review OCR warnings and the original tender documents before applying.
 The report `analysis` field records requirement/document counts, visited extraction
 fragments, cache hits, comparison groups, pair coverage and model request counts.
 These metrics distinguish work reused from new inference requests.
+
+## Complete checklist questions
+
+Explicit requests for all requirements use the complete saved requirement index,
+not top-k retrieval. Each requirement is loaded, scope/revision checked and linked
+to an exact current source excerpt. The response preserves duplicates, original
+wording and extracted classifications; it does not turn those classifications into
+verified eligibility decisions. Pending/OCR review and company evidence gaps are
+shown before the list. Oversized output fails explicitly without clipping.
+
+Focused questions continue to use scoped hybrid retrieval. The complete checklist
+is an inventory of the saved extraction, not proof that OCR or model extraction
+found every obligation in the originals. Review the sources before applying.
+
+Savia's generic external assistant provider uses a private declared action to load,
+send and poll the existing conversation. The SECOP service validates the owner,
+dossier, company, conversation and job context. No credentials reach the browser;
+report completion and pending source review are separate states.
