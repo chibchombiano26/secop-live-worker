@@ -109,6 +109,112 @@ function tokenize(value: string) {
   );
 }
 
+const SPANISH_FUNCTION_WORDS = new Set([
+  "a",
+  "al",
+  "algo",
+  "como",
+  "con",
+  "cual",
+  "cuando",
+  "cuanta",
+  "cuantas",
+  "cuanto",
+  "cuantos",
+  "de",
+  "del",
+  "desde",
+  "donde",
+  "el",
+  "ella",
+  "ellas",
+  "ellos",
+  "en",
+  "entre",
+  "era",
+  "es",
+  "esa",
+  "esas",
+  "ese",
+  "eso",
+  "esos",
+  "esta",
+  "estan",
+  "estar",
+  "estas",
+  "este",
+  "esto",
+  "estos",
+  "fue",
+  "ha",
+  "hay",
+  "la",
+  "las",
+  "le",
+  "les",
+  "lo",
+  "los",
+  "mas",
+  "me",
+  "mi",
+  "mis",
+  "muy",
+  "no",
+  "o",
+  "para",
+  "pero",
+  "por",
+  "que",
+  "se",
+  "ser",
+  "si",
+  "sin",
+  "su",
+  "sus",
+  "te",
+  "tenemos",
+  "tu",
+  "tus",
+  "un",
+  "una",
+  "unas",
+  "uno",
+  "unos",
+  "y",
+  "ya",
+  // Prompt instructions and conversational context rarely identify a source passage.
+  "cita",
+  "citar",
+  "pasaje",
+  "demuestra",
+  "demostrar",
+  "correctamente",
+  "perfil",
+  "empresa",
+  "cargado",
+  "licitacion",
+]);
+
+function retrievalQuery(question: string) {
+  const normalized = tokenize(question).join(" ");
+  const concepts = new Set<string>();
+  if (/\b(trayectoria|experiencia)\b/.test(normalized))
+    concepts.add("experiencia trayectoria");
+  if (
+    /\b(constancia|constancias|certificacion|certificaciones)\b/.test(
+      normalized,
+    )
+  )
+    concepts.add("constancias certificaciones");
+  if (/\b(trabajo|trabajos|anterior|anteriores)\b/.test(normalized))
+    concepts.add("trabajos anteriores contratos ejecutados");
+  if (
+    /\b(recibido|recibidos|recibida|recibidas|correctamente)\b/.test(normalized)
+  )
+    concepts.add("recibido a satisfaccion");
+  return [question, ...concepts].join(" ");
+}
+
 async function withTimeout<T>(
   operation: () => Promise<T>,
   timeoutMs = TIMEOUT_MS,
@@ -127,17 +233,38 @@ async function withTimeout<T>(
 }
 
 function lexicalRanks(chunks: EvidenceChunk[], question: string) {
-  const query = new Set(tokenize(question).filter((term) => term.length > 2));
+  const documents = chunks.map((chunk) => tokenize(chunk.text));
+  const query = new Set(
+    tokenize(retrievalQuery(question)).filter(
+      (term) => term.length > 2 && !SPANISH_FUNCTION_WORDS.has(term),
+    ),
+  );
+  const documentFrequency = new Map<string, number>();
+  const averageLength =
+    documents.reduce((total, terms) => total + terms.length, 0) /
+    Math.max(1, documents.length);
+  const frequenciesByDocument = documents.map((terms) => {
+    const frequencies = new Map<string, number>();
+    for (const term of terms) {
+      frequencies.set(term, (frequencies.get(term) ?? 0) + 1);
+    }
+    for (const term of frequencies.keys())
+      documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
+    return frequencies;
+  });
   const ranked = chunks
     .map((chunk, index) => {
-      const terms = tokenize(chunk.text);
-      const frequencies = new Map<string, number>();
-      for (const term of terms)
-        frequencies.set(term, (frequencies.get(term) ?? 0) + 1);
+      const frequencies = frequenciesByDocument[index]!;
+      const documentLength = documents[index]!.length;
       let score = 0;
       for (const term of query) {
         const tf = frequencies.get(term) ?? 0;
-        if (tf) score += 1 + Math.log(1 + tf);
+        if (!tf) continue;
+        const df = documentFrequency.get(term) ?? 0;
+        const idf = Math.log(1 + (documents.length - df + 0.5) / (df + 0.5));
+        const lengthNorm =
+          1.2 * (0.25 + (0.75 * documentLength) / Math.max(1, averageLength));
+        score += idf * ((tf * 2.2) / (tf + lengthNorm));
       }
       return { chunk, index, score };
     })
@@ -293,7 +420,7 @@ async function embeddingsForQuery(
   const vectors = await embed(
     repo,
     env,
-    [question],
+    [retrievalQuery(question)],
     AbortSignal.timeout(TIMEOUT_MS),
   );
   return vectors[0];
@@ -537,8 +664,10 @@ function mergeRanks(
     added.add(index);
     output.push(chunks[index]!);
   };
+  // Keep direct ranked results intact. Neighbor context is useful, but it must
+  // never push a stronger lexical or semantic hit out of the evidence budget.
+  for (const index of selected) add(index);
   for (const index of selected) {
-    add(index);
     const source = chunks[index]!;
     const positions = positionsBySource.get(source.documentVersionId);
     add(positions?.get(source.index - 1) ?? -1);

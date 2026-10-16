@@ -89,6 +89,14 @@ tender and generation filters before accepting vector results. Keep the number
 of candidate chunks and the final context size capped; citation verification
 does not expand the context limit.
 
+The lexical path uses BM25/IDF with Spanish function-word filtering and bounded
+procurement terminology expansion (for example, `trayectoria` and `experiencia`,
+or `constancias` and `certificaciones`). The expanded query also drives semantic
+retrieval. Direct ranked hits are selected before neighboring source chunks so
+adjacent context cannot displace the principal evidence. An uncited answer
+marked insufficient evidence is normalized to a retrieval limitation; it must
+not assert that the tender does not contain the requested requirement.
+
 If indexing is pending or Vectorize fails, return an explicitly marked lexical
 degraded result when lexical retrieval is available. Do not retry with an
 unfiltered Vectorize query or broaden the candidate set to compensate. If the

@@ -25,6 +25,19 @@ const chunks: any[] = [
   },
 ];
 describe("grounded tender conversation", () => {
+  it("does not present an uncited retrieval miss as proof that a requirement is absent", () => {
+    const result = validateAnswer(
+      {
+        answer:
+          "No se especifica la cantidad de certificaciones y no incluye detalles de recibido.",
+        insufficientEvidence: true,
+        citations: [],
+      },
+      chunks,
+    );
+    expect(result.answer).not.toContain("No se especifica");
+    expect(result.answer).toContain("no demuestra que el requisito no exista");
+  });
   it("constrains chat citations to real sources and bounds duplicated source/schema context", async () => {
     let sent: any;
     const evidence = Array.from({ length: 9 }, (_, index) => ({

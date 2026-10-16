@@ -31,6 +31,7 @@ class MemoryVectors {
   failUpsert = false;
   processedUpToMutation = "not-yet-visible";
   getByIdsVisible = false;
+  semanticSourceRefs?: string[];
 
   async upsert(vectors: Vector[]) {
     this.upserts++;
@@ -75,6 +76,13 @@ class MemoryVectors {
     const [key, value] = Object.entries(input.filter)[0] ?? [];
     const matches = [...namespace.values()]
       .filter((v) => v.metadata[key] === value)
+      .sort((a, b) => {
+        if (!this.semanticSourceRefs) return 0;
+        return (
+          this.semanticSourceRefs.indexOf(a.metadata.sourceRef) -
+          this.semanticSourceRefs.indexOf(b.metadata.sourceRef)
+        );
+      })
       .slice(0, input.topK)
       .map((v) => ({
         id: v.id,
@@ -720,5 +728,75 @@ describe("retrieveTenderEvidence", () => {
     expect(result.evidence.map((item) => item.index)).toEqual(
       expect.arrayContaining([9, 10]),
     );
+  });
+
+  it("keeps the minimum-experience and satisfactory-receipt passages under live SECOP vector ranks", async () => {
+    const vectors = new MemoryVectors();
+    const embeddedTexts: string[] = [];
+    const question =
+      "¿Con cuántas constancias de trabajos anteriores se acredita la trayectoria del oferente en esta licitación? Cita el pasaje que fija la cantidad y cómo se demuestra que esos trabajos fueron recibidos correctamente. No tenemos perfil de empresa cargado.";
+    const studiesP3: EvidenceChunk = {
+      documentVersionId: "public-studies",
+      page: 3,
+      index: 2,
+      text: "EXPERIENCIA DEL PROPONENTE. El proponente deberá acreditar experiencia para entidades públicas o privadas, anexando mínimo dos (2) certificaciones y/o facturas o",
+    };
+    const studiesP4: EvidenceChunk = {
+      documentVersionId: "public-studies",
+      page: 4,
+      index: 3,
+      text: "contratos ejecutados que lo respalden, dichas certificaciones deben manifestar el respectivo recibido a satisfacción.",
+    };
+    const distractions: EvidenceChunk[] = Array.from(
+      { length: 13 },
+      (_, i) => ({
+        documentVersionId: `public-notice-${i}`,
+        page: i + 1,
+        index: 0,
+        text: `El proponente deberá presentar los documentos requeridos para la oferta del proceso y cumplir las condiciones establecidas por la entidad. ${i % 2 ? "La invitación pública fija los requisitos habilitantes." : "Se publicará el cronograma de la licitación."}`,
+      }),
+    );
+    const corpus = [studiesP3, studiesP4, ...distractions];
+    const sourceRefs = await Promise.all(
+      corpus.map((item) =>
+        sha256(
+          JSON.stringify({
+            documentVersionId: item.documentVersionId,
+            page: item.page ?? null,
+            section: item.section ?? null,
+            index: item.index,
+            text: item.text,
+          }),
+        ),
+      ),
+    );
+    // Captured semantic order: invitation/supervisor distractors rank first;
+    // studies page 4 is semantic rank 11 and page 3 rank 15.
+    vectors.semanticSourceRefs = [
+      ...distractions.slice(0, 10).map((_, i) => sourceRefs[i + 2]!),
+      sourceRefs[1]!,
+      ...distractions.slice(10).map((_, i) => sourceRefs[i + 12]!),
+      sourceRefs[0]!,
+    ];
+    const result = await retrieveTenderEvidence(
+      new MemoryRepo() as unknown as DossierRepository,
+      "CO1.REQ.1901",
+      corpus,
+      question,
+      envWith(vectors, async (texts) => {
+        embeddedTexts.push(...texts);
+        return {
+          data: texts.map(() =>
+            Array.from({ length: 1024 }, (_, i) => (i === 0 ? 1 : 0)),
+          ),
+        };
+      }),
+    );
+    expect(result.evidence).toContainEqual(studiesP3);
+    expect(result.evidence).toContainEqual(studiesP4);
+    expect(embeddedTexts.at(-1)).toContain("experiencia trayectoria");
+    expect(embeddedTexts.at(-1)).toContain("constancias certificaciones");
+    expect(embeddedTexts.at(-1)).toContain("contratos ejecutados");
+    expect(embeddedTexts.at(-1)).toContain("recibido a satisfaccion");
   });
 });

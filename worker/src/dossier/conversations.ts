@@ -47,6 +47,9 @@ export function validateAnswer(value: unknown, chunks: EvidenceChunk[]) {
   const answer = answerSchema.parse(value);
   if (!answer.insufficientEvidence || answer.citations.length)
     answer.citations = validateCitations(answer.citations, chunks);
+  else
+    answer.answer =
+      "No pude verificar una respuesta con citas en los fragmentos recuperados. Esto no demuestra que el requisito no exista; es necesario revisar más fuentes del expediente o concretar la pregunta.";
   return answer;
 }
 export async function generateGroundedAnswer(
