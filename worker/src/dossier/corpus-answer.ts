@@ -54,8 +54,9 @@ async function run(model: ModelProvider, input: ModelInput): Promise<Answer> {
         if (!chunk) throw new DossierError("INVALID_CITATION", 502, true);
         return { documentVersionId: chunk.documentVersionId, ...(chunk.page ? { page: chunk.page } : {}), ...(chunk.section ? { section: chunk.section } : {}), excerpt: cite.excerpt };
       });
-      if (!result.insufficientEvidence || citations.length) validateCitations(citations, input.evidence);
-      return { ...result, citations };
+      const canonicalCitations = !result.insufficientEvidence || citations.length
+        ? validateCitations(citations, input.evidence) : [];
+      return { ...result, citations: canonicalCitations };
     } catch (error) {
       if (attempt || (!(error instanceof z.ZodError) && (!(error instanceof DossierError) || error.code !== "INVALID_CITATION"))) throw error;
       rejected = raw;

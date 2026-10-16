@@ -128,6 +128,10 @@ describe("grounded tender conversation", () => {
     expect(synthesis.evidence.every((c: any) => c.text.startsWith("Unique obligation"))).toBe(true);
   });
 
+  it("returns canonical source whitespace for citations used by corpus synthesis", async () => {
+    const result = await generateDossierAnswer({id: "test", generate: async () => ({answer: "Dos", insufficientEvidence: false, citations: [{sourceRef: "E1", excerpt: "mínimo dos certificaciones"}]})}, {purpose: "test", evidence: [{documentVersionId: "doc", index: 0, page: 1, text: "Se exigen mínimo dos\ncertificaciones."}], instructions: "Answer"});
+    expect(result.citations[0].excerpt).toBe("mínimo dos\ncertificaciones");
+  });
   it("repairs malformed reference output and rejects foreign source references", async () => {
     let calls = 0;
     const result = await generateDossierAnswer({id: "test", generate: async () => ({
