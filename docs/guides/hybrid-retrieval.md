@@ -163,3 +163,7 @@ therefore does not pass through another lossy summary; past submission deadlines
 are highlighted from validated extracted deadline fields. Focused follow-up questions
 still use scoped hybrid retrieval. This avoids extra synthesis latency while preserving
 every saved requirement, duplicate and conditional wording for review.
+
+The native provider also includes current OCR review limitations in each displayed
+answer, so copying an answer or transcript preserves the qualification independently
+of the panel coverage header. Stored historical audit turns are not rewritten.

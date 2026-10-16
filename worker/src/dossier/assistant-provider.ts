@@ -228,6 +228,16 @@ export async function runAssistantProvider(
   const analysisComplete = currentReport && !dossier.value.needsSynthesis;
   const pending = coverage?.pending?.length ?? 0,
     review = coverage?.reviewRequired?.length ?? 0;
+  if (review > 0) {
+    const warning = `${review} ${review === 1 ? "extracción requiere" : "extracciones requieren"} revisión contra el original. El texto extraído no confirma su exactitud ni el cumplimiento.`;
+    // Keep current extraction limitations in each displayed/exported answer, not
+    // only in the panel header, so copying cannot drop this qualification.
+    for (const message of messages) {
+      if (message.role !== "assistant") continue;
+      message.text = `${message.text}\n\n${warning}`;
+      message.insufficientEvidence = true;
+    }
+  }
   const result = {
     conversationId: conversation?.id ?? preferredConversationId,
     revision: conversation?.revision ?? 0,

@@ -109,6 +109,10 @@ describe("native assistant private provider", () => {
     });
     expect(r.coverage.complete).toBe(false);
     expect(r.coverage.label).toContain("1 extracción");
+    expect(r.messages[1].text).toContain(
+      "1 extracción requiere revisión contra el original",
+    );
+    expect(r.messages[1].insufficientEvidence).toBe(true);
   });
   it("returns all pages of the selected conversation for complete transcript copying", async () => {
     const turnIds = Array.from({ length: 23 }, (_, i) => `history-${i}`);
@@ -138,7 +142,7 @@ describe("native assistant private provider", () => {
     });
     expect(result.messages).toHaveLength(46);
     expect(result.messages[0].text).toBe("Question 0");
-    expect(result.messages.at(-1).text).toBe("Answer 22");
+    expect(result.messages.at(-1).text).toMatch(/^Answer 22\n\n1 extracción requiere revisión/);
     const changed = await repo.read<any>("conversation", "conversation");
     await repo.save(
       "conversation",
