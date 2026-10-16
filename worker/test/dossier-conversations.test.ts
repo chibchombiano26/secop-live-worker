@@ -255,6 +255,32 @@ describe("grounded tender conversation", () => {
     const recovered = sent.evidence[0].text.replace(/\[E\d+\.\d+\] /g, "");
     expect(recovered).toBe(original);
   });
+  it("keeps preceding context when an experience clause crosses a reference boundary", async () => {
+    const original =
+      "Introducción. ".repeat(32) +
+      "Mínimo dos (2) certificaciones y/o facturas que acrediten recibido a satisfacción. " +
+      "Condiciones. ".repeat(50);
+    const result = await generateDossierAnswer(
+      {
+        id: "test",
+        generate: async () => ({
+          answer: "Dos certificaciones",
+          insufficientEvidence: false,
+          citations: [{ sourceRef: "E1.2" }],
+        }),
+      },
+      {
+        purpose: "test",
+        evidence: [
+          { documentVersionId: "doc", index: 0, page: 3, text: original },
+        ],
+        instructions: "Answer",
+      },
+    );
+    expect(result.citations[0].excerpt).toContain("Mínimo dos (2)");
+    expect(result.citations[0].excerpt).toContain("recibido a satisfacción");
+    expect(original).toContain(result.citations[0].excerpt);
+  });
   it("returns canonical source whitespace for citations used by corpus synthesis", async () => {
     const result = await generateDossierAnswer(
       {

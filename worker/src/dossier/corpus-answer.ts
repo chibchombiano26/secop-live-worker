@@ -31,8 +31,12 @@ const contextObject = (input: ModelInput): Record<string, unknown> =>
 function citationSpans(evidence: EvidenceChunk[]) {
   return evidence.flatMap((chunk, sourceIndex) => {
     if (chunk.text.length < 3) return [];
-    const spans: Array<{ ref: string; chunk: EvidenceChunk; text: string }> =
-      [];
+    const spans: Array<{
+      ref: string;
+      chunk: EvidenceChunk;
+      text: string;
+      start: number;
+    }> = [];
     for (let start = 0; start < chunk.text.length;) {
       let end = Math.min(start + 500, chunk.text.length);
       if (end < chunk.text.length) {
@@ -44,6 +48,7 @@ function citationSpans(evidence: EvidenceChunk[]) {
         ref: `E${sourceIndex + 1}.${spans.length + 1}`,
         chunk,
         text: chunk.text.slice(start, end),
+        start,
       });
       start = end;
     }
@@ -127,7 +132,14 @@ async function run(model: ModelProvider, input: ModelInput): Promise<Answer> {
         const chunk =
           span?.chunk ??
           (legacy ? input.evidence[Number(legacy[1]) - 1] : undefined);
-        const excerpt = span?.text ?? cite.excerpt;
+        // Keep the preceding source context when a clause crosses a marker or
+        // parser page footer. The quotation remains one original contiguous span.
+        const excerpt = span
+          ? span.chunk.text.slice(
+              Math.max(0, span.start - 500),
+              span.start + span.text.length,
+            )
+          : cite.excerpt;
         if (!chunk || !excerpt)
           throw new DossierError("INVALID_CITATION", 502, true);
         return {

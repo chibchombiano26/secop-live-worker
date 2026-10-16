@@ -133,7 +133,8 @@ requirement was reviewed for a focused question.
 Citation schemas use short per-request span references instead of embedding repeated
 copies of source text in schema enums. Markers partition every character of the
 original source text; no text is omitted between markers. The model selects a
-supporting reference, and the server attaches the exact original quotation and
+supporting reference, and the server attaches its original quotation (with up to
+500 preceding characters so a split clause retains its quantity or condition) and
 document/page. The model does not generate quotation text. Invented references
 are rejected. Source text and citation schemas therefore do not duplicate the
 entire corpus, and paraphrased quotations cannot trigger recurring retries. Historical answer excerpts are excluded
