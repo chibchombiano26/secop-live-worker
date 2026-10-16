@@ -4,6 +4,7 @@ import {
   validateAnswer,
   generateGroundedAnswer,
   generateDossierAnswer,
+  needsCorpusReview,
 } from "../src/dossier/conversations";
 import { isExhaustiveChecklistRequest } from "../src/dossier/checklist";
 const chunks: any[] = [
@@ -27,6 +28,18 @@ const chunks: any[] = [
   },
 ];
 describe("grounded tender conversation", () => {
+  it("uses complete corpus review for preparation questions and hybrid search for focused follow-ups", () => {
+    expect(needsCorpusReview("¿Qué necesitamos para aplicar?")).toBe(true);
+    expect(needsCorpusReview("Resume experiencia, documentos y cierre")).toBe(
+      true,
+    );
+    expect(needsCorpusReview("¿Cuál es el índice mínimo de liquidez?")).toBe(
+      false,
+    );
+    expect(
+      needsCorpusReview("¿Cuántas certificaciones de experiencia se piden?"),
+    ).toBe(false);
+  });
   it("routes explicit exhaustive requirement requests to the complete checklist", () => {
     expect(
       isExhaustiveChecklistRequest("Enumera todos los requisitos del pliego"),
@@ -98,61 +111,208 @@ describe("grounded tender conversation", () => {
   it("passes every current source without duplicating excerpts in the citation schema", async () => {
     let sent: any;
     const evidence = Array.from({ length: 37 }, (_, i) => ({
-      documentVersionId: `document-${i}`, page: i + 1, index: i,
+      documentVersionId: `document-${i}`,
+      page: i + 1,
+      index: i,
       text: `Requirement ${i}: ` + "original evidence ".repeat(35),
     }));
-    await generateDossierAnswer({ id: "test", generate: async (input) => {
-      sent = input;
-      return { answer: "Review pending", insufficientEvidence: true, citations: [] };
-    } }, { purpose: "tender_conversation", evidence, instructions: "Use all sources" });
+    await generateDossierAnswer(
+      {
+        id: "test",
+        generate: async (input) => {
+          sent = input;
+          return {
+            answer: "Review pending",
+            insufficientEvidence: true,
+            citations: [],
+          };
+        },
+      },
+      {
+        purpose: "tender_conversation",
+        evidence,
+        instructions: "Use all sources",
+      },
+    );
     expect(sent.evidence).toHaveLength(37);
     expect(JSON.stringify(sent).length).toBeLessThanOrEqual(48000);
-    expect(sent.context.retrievalCoverage).toMatchObject({ selectedSources: 37, omittedSources: 0 });
-    expect(JSON.stringify(sent.outputSchema)).not.toContain("original evidence");
+    expect(sent.context.retrievalCoverage).toMatchObject({
+      selectedSources: 37,
+      omittedSources: 0,
+    });
+    expect(JSON.stringify(sent.outputSchema)).not.toContain(
+      "original evidence",
+    );
   });
   it("reads all large-corpus blocks and grounds synthesis only in verified original excerpts", async () => {
     const evidence = Array.from({ length: 8 }, (_, i) => ({
-      documentVersionId: `doc-${i}`, page: 1, index: i,
+      documentVersionId: `doc-${i}`,
+      page: 1,
+      index: i,
       text: `Unique obligation ${i}. ` + "source material ".repeat(1200),
     }));
-    const visited = new Set<string>(); let synthesis: any;
-    const result = await generateDossierAnswer({ id: "test", generate: async (input) => {
-      for (const c of input.evidence) visited.add(c.documentVersionId);
-      if (input.purpose === "tender_conversation") synthesis = input;
-      return { answer: input.evidence.map(c => c.text.split(". ")[0]).join("; "), insufficientEvidence: false,
-        citations: input.evidence.map((c, i) => ({ sourceRef: `E${i + 1}.1` })) };
-    } }, { purpose: "tender_conversation", evidence, instructions: "Use all sources" });
+    const visited = new Set<string>();
+    let synthesis: any;
+    const result = await generateDossierAnswer(
+      {
+        id: "test",
+        generate: async (input) => {
+          for (const c of input.evidence) visited.add(c.documentVersionId);
+          if (input.purpose === "tender_conversation") synthesis = input;
+          return {
+            answer: input.evidence.map((c) => c.text.split(". ")[0]).join("; "),
+            insufficientEvidence: false,
+            citations: input.evidence.map((c, i) => ({
+              sourceRef: `E${i + 1}.1`,
+            })),
+          };
+        },
+      },
+      {
+        purpose: "tender_conversation",
+        evidence,
+        instructions: "Use all sources",
+      },
+    );
     expect(visited.size).toBe(8);
-    expect(synthesis.context.corpusCoverage).toMatchObject({ sourceChunksTotal: 8, sourceChunksReviewed: 8 });
-    expect(result.citations.map(c => c.documentVersionId)).toEqual(evidence.map(c => c.documentVersionId));
-    expect(synthesis.evidence.every((c: any) => c.text.includes("Unique obligation") && c.text.length < 600)).toBe(true);
+    expect(synthesis.context.corpusCoverage).toMatchObject({
+      sourceChunksTotal: 8,
+      sourceChunksReviewed: 8,
+    });
+    expect(result.citations.map((c) => c.documentVersionId)).toEqual(
+      evidence.map((c) => c.documentVersionId),
+    );
+    expect(
+      synthesis.evidence.every(
+        (c: any) => c.text.includes("Unique obligation") && c.text.length < 600,
+      ),
+    ).toBe(true);
   });
 
+  it("synthesizes every verified block quotation without duplicating long unverified model narratives", async () => {
+    const evidence = Array.from({ length: 18 }, (_, i) => ({
+      documentVersionId: `doc-${i}`,
+      page: 1,
+      index: i,
+      text: `Obligation ${i}. ` + "original requirement ".repeat(300),
+    }));
+    let final: any;
+    await generateDossierAnswer(
+      {
+        id: "test",
+        generate: async (input) => {
+          if (input.purpose === "tender_conversation") final = input;
+          return {
+            answer:
+              input.purpose === "tender_conversation"
+                ? "Synthesis"
+                : "Narrative ".repeat(1700),
+            insufficientEvidence: false,
+            citations: input.evidence.map((_, i) => ({
+              sourceRef: `E${i + 1}.1`,
+            })),
+          };
+        },
+      },
+      { purpose: "tender_conversation", evidence, instructions: "Answer" },
+    );
+    expect(
+      new Set(final.evidence.map((c: any) => c.documentVersionId)).size,
+    ).toBe(18);
+    expect(JSON.stringify(final).length).toBeLessThanOrEqual(48000);
+    expect(JSON.stringify(final.context)).not.toContain("Narrative Narrative");
+  });
   it("resolves source span references to exact original quotes without model-generated excerpts", async () => {
     let sent: any;
-    const original = "Primera obligación. " + "Requisito contractual. ".repeat(70);
-    const result = await generateDossierAnswer({id: "test", generate: async input => {
-      sent = input; return {answer: "Condición", insufficientEvidence: false, citations: [{sourceRef: "E1.2"}]};
-    }}, {purpose: "test", evidence: [{documentVersionId: "doc", page: 3, index: 0, text: original}], instructions: "Answer"});
+    const original =
+      "Primera obligación. " + "Requisito contractual. ".repeat(70);
+    const result = await generateDossierAnswer(
+      {
+        id: "test",
+        generate: async (input) => {
+          sent = input;
+          return {
+            answer: "Condición [E1.2]",
+            insufficientEvidence: false,
+            citations: [{ sourceRef: "E1.2" }],
+          };
+        },
+      },
+      {
+        purpose: "test",
+        evidence: [
+          { documentVersionId: "doc", page: 3, index: 0, text: original },
+        ],
+        instructions: "Answer",
+      },
+    );
     expect(original).toContain(result.citations[0].excerpt);
     expect(result.citations[0].page).toBe(3);
-    expect(sent.outputSchema.properties.citations.items.properties).not.toHaveProperty("excerpt");
+    expect(result.answer).toBe("Condición [S001]");
+    expect(
+      sent.outputSchema.properties.citations.items.properties,
+    ).not.toHaveProperty("excerpt");
     const recovered = sent.evidence[0].text.replace(/\[E\d+\.\d+\] /g, "");
     expect(recovered).toBe(original);
   });
   it("returns canonical source whitespace for citations used by corpus synthesis", async () => {
-    const result = await generateDossierAnswer({id: "test", generate: async () => ({answer: "Dos", insufficientEvidence: false, citations: [{sourceRef: "E1", excerpt: "mínimo dos certificaciones"}]})}, {purpose: "test", evidence: [{documentVersionId: "doc", index: 0, page: 1, text: "Se exigen mínimo dos\ncertificaciones."}], instructions: "Answer"});
+    const result = await generateDossierAnswer(
+      {
+        id: "test",
+        generate: async () => ({
+          answer: "Dos",
+          insufficientEvidence: false,
+          citations: [
+            { sourceRef: "E1", excerpt: "mínimo dos certificaciones" },
+          ],
+        }),
+      },
+      {
+        purpose: "test",
+        evidence: [
+          {
+            documentVersionId: "doc",
+            index: 0,
+            page: 1,
+            text: "Se exigen mínimo dos\ncertificaciones.",
+          },
+        ],
+        instructions: "Answer",
+      },
+    );
     expect(result.citations[0].excerpt).toBe("mínimo dos\ncertificaciones");
   });
   it("repairs malformed reference output and rejects foreign source references", async () => {
     let calls = 0;
-    const result = await generateDossierAnswer({id: "test", generate: async () => ({
-      answer: "Tres contratos", insufficientEvidence: false,
-      citations: ++calls === 1 ? [{documentVersionId: "pliego", excerpt: "tres contratos"}] : [{sourceRef: "E1", excerpt: "tres contratos"}],
-    })}, {purpose: "test", evidence: chunks, instructions: "Answer"});
+    const result = await generateDossierAnswer(
+      {
+        id: "test",
+        generate: async () => ({
+          answer: "Tres contratos",
+          insufficientEvidence: false,
+          citations:
+            ++calls === 1
+              ? [{ documentVersionId: "pliego", excerpt: "tres contratos" }]
+              : [{ sourceRef: "E1", excerpt: "tres contratos" }],
+        }),
+      },
+      { purpose: "test", evidence: chunks, instructions: "Answer" },
+    );
     expect(calls).toBe(2);
     expect(result.citations[0].documentVersionId).toBe("pliego");
-    await expect(generateDossierAnswer({id: "test", generate: async () => ({answer: "Foreign", insufficientEvidence: false, citations: [{sourceRef: "E999", excerpt: "foreign text"}]})}, {purpose: "test", evidence: chunks, instructions: "Answer"})).rejects.toMatchObject({code: "INVALID_CITATION"});
+    await expect(
+      generateDossierAnswer(
+        {
+          id: "test",
+          generate: async () => ({
+            answer: "Foreign",
+            insufficientEvidence: false,
+            citations: [{ sourceRef: "E999", excerpt: "foreign text" }],
+          }),
+        },
+        { purpose: "test", evidence: chunks, instructions: "Answer" },
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_CITATION" });
   });
   it("repairs a discontiguous quotation before storing an answer", async () => {
     let calls = 0;

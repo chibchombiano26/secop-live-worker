@@ -76,6 +76,11 @@ describe("exhaustive checklist rendering", () => {
     expect(answer).not.toContain("experience_years");
     expect(answer).not.toContain("gte");
     expect(answer).not.toContain("2 years");
+    checklist.items[0] = {...checklist.items[0], wording: "Presentación de ofertas", deadline: "30 de abril de 2026", deadlineStatus: "past"};
+    const compact = renderExhaustiveChecklist(checklist, {includeSourceExcerpts: false});
+    expect(compact).toMatch(/^## Plazo de presentación transcurrido/);
+    expect(compact).toContain("[S001] Pliego.pdf (p. 10)");
+    expect(compact).toContain("No se debe asumir que este proceso recibe ofertas");
   });
 
   it("parses Spanish deadlines through the end of the stated Bogota day", () => {

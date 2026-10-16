@@ -434,7 +434,25 @@ export function renderExhaustiveChecklist(
     group.push(item);
     groups.set(label, group);
   }
+  const pastSubmission = checklist.items.filter(
+    (item) =>
+      item.deadlineStatus === "past" &&
+      /presentaci[oó]n|propuestas|ofertas/i.test(item.wording),
+  );
   const lines = [
+    ...(pastSubmission.length
+      ? [
+          "## Plazo de presentación transcurrido",
+          "",
+          ...pastSubmission.map(
+            (item) =>
+              `- ${item.wording}: ${item.deadline}. ${item.citations.map((c) => `[${c.sourceRef}] ${c.documentName}${c.page ? ` (p. ${c.page})` : ""}`).join("; ")}`,
+          ),
+          "",
+          "No se debe asumir que este proceso recibe ofertas actualmente. Verifica su estado y las actuaciones posteriores en SECOP.",
+          "",
+        ]
+      : []),
     `## Lista de requisitos guardados (${checklist.coverage.requirements})`,
     "",
     "## Cobertura y revisión",

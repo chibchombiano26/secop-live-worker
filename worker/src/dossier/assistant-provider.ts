@@ -137,7 +137,11 @@ export async function runAssistantProvider(
         throw new DossierError("ASSISTANT_HISTORY_TOO_LARGE", 413);
       let cursor = conversation.nextCursor;
       while (cursor !== null) {
-        const page = await readConversation(repo, preferredConversationId, cursor);
+        const page = await readConversation(
+          repo,
+          preferredConversationId,
+          cursor,
+        );
         if (page.revision !== conversation.revision)
           throw new DossierError("REVISION_CONFLICT", 409, true);
         conversation.turns.push(...page.turns);

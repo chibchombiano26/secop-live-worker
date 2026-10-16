@@ -111,18 +111,41 @@ describe("native assistant private provider", () => {
     expect(r.coverage.label).toContain("1 extracción");
   });
   it("returns all pages of the selected conversation for complete transcript copying", async () => {
-    const turnIds = Array.from({length: 23}, (_, i) => `history-${i}`);
-    for (const [i, turnId] of turnIds.entries()) await repo.save("message", turnId, {
-      userMessage: `Question ${i}`, answer: `Answer ${i}`, citations: [], corpusRevision: 6, companyRevision: null,
-    }, 0);
+    const turnIds = Array.from({ length: 23 }, (_, i) => `history-${i}`);
+    for (const [i, turnId] of turnIds.entries())
+      await repo.save(
+        "message",
+        turnId,
+        {
+          userMessage: `Question ${i}`,
+          answer: `Answer ${i}`,
+          citations: [],
+          corpusRevision: 6,
+          companyRevision: null,
+        },
+        0,
+      );
     const current = await repo.read<any>("conversation", "conversation");
-    await repo.save("conversation", "conversation", {...current.value, turnIds}, current.revision);
-    const result = await call({context: {dossierId: "CO1.REQ.1"}, request: {method: "load"}});
+    await repo.save(
+      "conversation",
+      "conversation",
+      { ...current.value, turnIds },
+      current.revision,
+    );
+    const result = await call({
+      context: { dossierId: "CO1.REQ.1" },
+      request: { method: "load" },
+    });
     expect(result.messages).toHaveLength(46);
     expect(result.messages[0].text).toBe("Question 0");
     expect(result.messages.at(-1).text).toBe("Answer 22");
     const changed = await repo.read<any>("conversation", "conversation");
-    await repo.save("conversation", "conversation", {...changed.value, turnIds: ["turn"]}, changed.revision);
+    await repo.save(
+      "conversation",
+      "conversation",
+      { ...changed.value, turnIds: ["turn"] },
+      changed.revision,
+    );
   });
   it("rejects a conversation reference from another tender", async () => {
     await expect(

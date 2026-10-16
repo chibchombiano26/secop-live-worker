@@ -120,10 +120,15 @@ needed. Partial coverage and manual OCR review remain separate limitations.
 
 ## Complete-corpus conversation answers
 
-The native conversation no longer uses top-k search as its answer context.
-Every current owner-scoped tender chunk and nonexpired selected-company chunk
-is supplied, including sources outside the top ten vector/lexical hits. Vectorize
-remains an index for focused search, not proof of a complete dossier review.
+Broad native conversation preparation/review questions no longer use top-k
+search as their sole answer context. With a current report, every saved requirement
+is returned directly after its citations are validated against all current authorized
+tender chunks; selected-company evidence stays scoped to that company. Without a current ledger, all authorized chunks
+are reviewed in bounded blocks, including sources outside the top ten hits. Focused follow-ups retain isolated hybrid Vectorize
+and lexical retrieval, using the compact reference scheme below without silent
+context-budget source deletion. Retrieval metadata distinguishes full-corpus
+reviews from limited passage selections; a complete index does not mean every
+requirement was reviewed for a focused question.
 
 Citation schemas use short per-request span references instead of embedding repeated
 copies of source text in schema enums. Markers partition every character of the
@@ -149,3 +154,11 @@ copying, guarded at 1,000 turns and the existing 900 KB serialized response boun
 A changed revision or oversized history fails explicitly rather than exporting an
 incomplete transcript. Other tenders, companies, owners and conversations are
 never joined to fill context or history.
+
+Broad preparation questions with a current requirement ledger return the complete
+server-rendered cited inventory directly. Live testing showed that even a structured
+LLM pass over all rows could omit documents or overlook elapsed dates. The inventory
+therefore does not pass through another lossy summary; past submission deadlines
+are highlighted from validated extracted deadline fields. Focused follow-up questions
+still use scoped hybrid retrieval. This avoids extra synthesis latency while preserving
+every saved requirement, duplicate and conditional wording for review.

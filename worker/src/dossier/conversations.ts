@@ -11,7 +11,7 @@ import type { EvidenceChunk } from "./extraction";
 import { companyEvidence } from "./companies";
 import type { ModelProvider, ModelInput } from "./model";
 import { sha256 } from "./downloads";
-import type { RetrievalEnv } from "./retrieval";
+import { retrieveTenderEvidence, type RetrievalEnv } from "./retrieval";
 import { generateDossierAnswer } from "./corpus-answer";
 export { generateDossierAnswer } from "./corpus-answer";
 import {
@@ -119,6 +119,29 @@ export async function generateGroundedAnswer(
     }
   }
   throw new DossierError("MODEL_INVALID_OUTPUT", 502, true);
+}
+/** Broad preparation/review questions require a corpus pass, not a top-k answer. */
+export function needsCorpusReview(message: string) {
+  const value = message
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  if (
+    /\b(expediente|todos|todas|completo|completa|exhaustiv[oa]|resum[ae]|sintesis|aplicar|postular|necesitamos)\b/.test(
+      value,
+    )
+  )
+    return true;
+  const topics = [
+    /experiencia|trayectoria|certificaciones/,
+    /documentos|habilitantes/,
+    /plazo|cierre|cronograma/,
+    /tecnic[oa]/,
+    /garantia/,
+    /economica|financier[oa]/,
+    /cumplimiento/,
+  ];
+  return topics.filter((topic) => topic.test(value)).length > 1;
 }
 export type Conversation = {
   dossierId: string;
@@ -255,7 +278,12 @@ export async function answerTenderQuestion(
     let checklist: ExhaustiveChecklist | undefined;
     let answerMarkdown: string | undefined;
     let retrieval: Record<string, unknown>;
-    if (isExhaustiveChecklistRequest(input.message)) {
+    if (
+      isExhaustiveChecklistRequest(input.message) ||
+      (needsCorpusReview(input.message) &&
+        Array.isArray((report.value as any).requirementIds) &&
+        (report.value as any).corpusRevision === dossier.value.corpusRevision)
+    ) {
       checklist = await buildExhaustiveChecklist(
         repo,
         input.dossierId,
@@ -283,19 +311,56 @@ export async function answerTenderQuestion(
           .slice(-3)
           .map((turn) => repo.read("message", turn)),
       );
-      // Source reads above are owner/dossier scoped. Pass the entire current
-      // corpus; vector top-k is useful for search, not a complete tender review.
-      const evidence = [...chunks, ...companyChunks];
-      const sourceCatalog = await Promise.all([...new Set(chunks.map(c => c.documentVersionId))].map(async id => {
-        try {
-          const doc = await repo.read<Record<string, unknown>>("document", id);
-          return { documentVersionId: id, name: doc.value.name, state: doc.value.state };
-        } catch (error) {
-          if (!(error instanceof DossierError) || error.code !== "NOT_FOUND") throw error;
-          return { documentVersionId: id, name: "Descripción oficial del proceso" };
-        }
-      }));
-      retrieval = { mode: "full_corpus", sourceChunksScanned: chunks.length, sourceChunksTotal: chunks.length, documents: sourceCatalog.length, selectionLimited: false };
+      // Broad reviews scan every authorized source. Focused follow-ups keep the
+      // existing isolated hybrid index, without the old context-budget deletion.
+      const fullReview = needsCorpusReview(input.message);
+      const selected = fullReview
+        ? null
+        : await retrieveTenderEvidence(
+            repo,
+            input.dossierId,
+            chunks,
+            input.message,
+            options.env ?? {},
+            options.heartbeat,
+          );
+      const evidence = [
+        ...(selected?.evidence ?? chunks),
+        ...(fullReview
+          ? companyChunks
+          : retrieveEvidence(companyChunks, input.message, 3)),
+      ];
+      const sourceCatalog = await Promise.all(
+        [...new Set(chunks.map((c) => c.documentVersionId))].map(async (id) => {
+          try {
+            const doc = await repo.read<Record<string, unknown>>(
+              "document",
+              id,
+            );
+            return {
+              documentVersionId: id,
+              name: doc.value.name,
+              state: doc.value.state,
+            };
+          } catch (error) {
+            if (!(error instanceof DossierError) || error.code !== "NOT_FOUND")
+              throw error;
+            return {
+              documentVersionId: id,
+              name: "Descripción oficial del proceso",
+            };
+          }
+        }),
+      );
+      retrieval = selected
+        ? { ...selected.retrieval, selectionLimited: true }
+        : {
+            mode: "full_corpus",
+            sourceChunksScanned: chunks.length,
+            sourceChunksTotal: chunks.length,
+            documents: sourceCatalog.length,
+            selectionLimited: false,
+          };
       output = await generateDossierAnswer(model, {
         purpose: "tender_conversation",
         outputSchema: z.toJSONSchema(answerSchema),
