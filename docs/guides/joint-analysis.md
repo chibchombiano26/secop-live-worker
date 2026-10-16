@@ -17,8 +17,10 @@ than truncate. Request sizing includes instructions and the output schema.
 
 Proposed conflicts and amendments receive a separate evidence check using both
 original requirements and their complete cited quotations. Confirmed findings
-must cite evidence from both sides. Amendments require explicit direction, not
-merely a later date. The report retains the individual requirements, original
+must cite evidence from both sides. Amendments require explicit direction and a
+verbatim passage from the replacement source containing explicit change language.
+Missing change evidence downgrades the proposal to unconfirmed; added detail and
+chronology alone are insufficient. The report retains the individual requirements, original
 citations, candidate decisions and document coverage for review.
 
 Each comparison and verification is cached only after validation. Keys include

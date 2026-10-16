@@ -25,6 +25,7 @@ function verificationSchemaForIds(ids: string[]) {
     decision: z.enum(["conflict", "amendment", "unconfirmed"]),
     reason: z.string().min(1).max(1_500),
     citationIds: z.array(z.enum(ids as [string, ...string[]])).max(20),
+    changeExcerpt: z.string().min(1).max(4_000).optional(),
     previous: z.number().int().nonnegative().optional(),
     replacement: z.number().int().nonnegative().optional(),
   });
@@ -428,7 +429,7 @@ export async function reviewJointRequirements(
         ],
       },
       instructions:
-        "Return {decision:'conflict'|'amendment'|'unconfirmed',reason:string,citationIds:string[],previous?:number,replacement?:number}. Verify the proposed relationship using only the two original requirement wordings and their exact quoted evidence. Cite valid supplied evidence IDs from BOTH requirements for any confirmed conflict or amendment. A conflict means the two obligations are mutually incompatible for the same scope and period. Repeated obligations, a longer wording, extra detail, or compatible general and specific terms are NOT conflicts. An amendment requires an explicit source statement replacing, correcting or modifying an identified earlier term. Two different evaluation criteria or a condition described elsewhere are NOT evidence of an amendment by themselves. Do not infer an amendment from later chronology; the text must explicitly change a prior term. If evidence does not establish the relationship, return unconfirmed. For an amendment, previous and replacement must be the original global requirement indices and the text must explicitly establish that direction. Never invent quotations, IDs or facts.",
+        "Return {decision:'conflict'|'amendment'|'unconfirmed',reason:string,citationIds:string[],previous?:number,replacement?:number,changeExcerpt?:string}. For an amendment, changeExcerpt must copy a contiguous passage from the replacement source that explicitly modifies or replaces the prior term. Without that passage return unconfirmed. Verify the proposed relationship using only the two original requirement wordings and their exact quoted evidence. Cite valid supplied evidence IDs from BOTH requirements for any confirmed conflict or amendment. A conflict means the two obligations are mutually incompatible for the same scope and period. Repeated obligations, a longer wording, extra detail, or compatible general and specific terms are NOT conflicts. An amendment requires an explicit source statement replacing, correcting or modifying an identified earlier term. Two different evaluation criteria or a condition described elsewhere are NOT evidence of an amendment by themselves. Do not infer an amendment from later chronology; the text must explicitly change a prior term. If evidence does not establish the relationship, return unconfirmed. For an amendment, previous and replacement must be the original global requirement indices and the text must explicitly establish that direction. Never invent quotations, IDs or facts.",
       outputSchema: z.toJSONSchema(
         verificationSchemaForIds([...citationMap.keys()]),
       ),
@@ -470,6 +471,31 @@ export async function reviewJointRequirements(
     }
     if (verified.decision !== "unconfirmed" && sides.size !== 2)
       throw invalidOutput();
+    if (verified.decision === "amendment") {
+      const passage = verified.changeExcerpt;
+      const changeLanguage =
+        /modific|sustituy|reemplaz|rectific|corrig|quedar[aá]|dejar? sin efecto|amend|replac|supersed/iu;
+      const replacementEvidence = citations.filter((citation) =>
+        requirements[verified.replacement ?? -1]?.citations.some(
+          (original) => original === citation,
+        ),
+      );
+      if (
+        !passage ||
+        !changeLanguage.test(passage) ||
+        !replacementEvidence.some((citation) =>
+          citation.excerpt.includes(passage),
+        )
+      ) {
+        verified = {
+          ...verified,
+          decision: "unconfirmed",
+          reason:
+            "No se aportó un pasaje literal que modifique expresamente el requisito anterior. " +
+            verified.reason,
+        };
+      }
+    }
     if (verified.decision === "amendment") {
       if (
         verified.previous === undefined ||

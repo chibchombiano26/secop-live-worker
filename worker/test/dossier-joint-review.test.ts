@@ -131,6 +131,7 @@ describe("reviewJointRequirements", () => {
               reason:
                 "La cláusula posterior sustituye expresamente la anterior.",
               citationIds: ["r0c0", "r1c0"],
+              changeExcerpt: "Se modifica el plazo a 20 días",
               previous: 0,
               replacement: 1,
             },
@@ -154,6 +155,42 @@ describe("reviewJointRequirements", () => {
         ],
       }),
     ]);
+  });
+
+  it("does not treat compatible extra detail as an amendment without an explicit source change", async () => {
+    const result = await reviewJointRequirements(
+      [
+        req("Constituir garantía", "a"),
+        req("Constituir garantía única en los términos del contrato", "b"),
+      ],
+      {
+        id: "compatible",
+        generate: async (input: any) =>
+          input.purpose === "joint_requirement_review"
+            ? {
+                summary: "Garantías.",
+                candidates: [
+                  {
+                    left: 0,
+                    right: 1,
+                    kind: "amendment",
+                    reason: "Más detalles",
+                  },
+                ],
+              }
+            : {
+                decision: "amendment",
+                reason: "Agrega detalles",
+                citationIds: ["r0c0", "r1c0"],
+                previous: 0,
+                replacement: 1,
+              },
+      },
+      {},
+      cache(),
+    );
+    expect(result.amendments).toEqual([]);
+    expect(result.candidateReviews[0].decision).toBe("unconfirmed");
   });
 
   it("keeps pending and review-required document coverage in the comparison request", async () => {
