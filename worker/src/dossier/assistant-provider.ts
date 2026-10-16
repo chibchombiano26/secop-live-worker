@@ -37,8 +37,9 @@ export async function runAssistantProvider(
 ) {
   const { context, request } = input;
   const dossier = await repo.readDossier(context.dossierId);
-  if (context.companyProfileId)
-    await repo.read("company", context.companyProfileId);
+  const selectedCompany = context.companyProfileId
+    ? await repo.read<{ name: string }>("company", context.companyProfileId)
+    : null;
   function matches(value: { dossierId?: unknown; companyProfileId?: unknown }) {
     return (
       value.dossierId === context.dossierId &&
@@ -220,7 +221,7 @@ export async function runAssistantProvider(
     pendingJobId,
     coverage: {
       complete: analysisComplete && pending === 0 && review === 0,
-      label: `${analysisComplete ? "Análisis conjunto completado" : "Análisis conjunto pendiente"} · ${coverage?.indexed ?? 0}/${coverage?.total ?? 0} documentos · ${pending} pendientes · ${review} ${review === 1 ? "extracción" : "extracciones"} por revisar`,
+      label: `${context.dossierId} · ${selectedCompany?.value.name ?? "Solo la licitación"} · ${analysisComplete ? "Análisis conjunto completado" : "Análisis conjunto pendiente"} · ${coverage?.indexed ?? 0}/${coverage?.total ?? 0} documentos · ${pending} pendientes · ${review} ${review === 1 ? "extracción" : "extracciones"} por revisar`,
     },
   };
   if (new TextEncoder().encode(JSON.stringify(result)).length > 900_000)

@@ -86,6 +86,77 @@ function fail(code: string, status = 409): never {
   throw new DossierError(code, status);
 }
 
+const spanishMonths: Record<string, number> = {
+  enero: 1,
+  febrero: 2,
+  marzo: 3,
+  abril: 4,
+  mayo: 5,
+  junio: 6,
+  julio: 7,
+  agosto: 8,
+  septiembre: 9,
+  setiembre: 9,
+  octubre: 10,
+  noviembre: 11,
+  diciembre: 12,
+};
+
+/** Return whether the extracted deadline has passed, using Bogota day-end for Spanish dates. */
+export function checklistDeadlineStatus(
+  value: string | null,
+  now: number,
+): "past" | "upcoming" | null {
+  if (!value) return null;
+  const spanishDate = value.match(
+    /^\s*(\d{1,2})\s+de\s+([\p{L}]+)\s+de\s+(\d{4})(?:[\s,]+(?:a\s+las\s+)?(\d{1,2}):(\d{2})(?::(\d{2}))?)?\s*$/iu,
+  );
+  if (spanishDate) {
+    const day = Number(spanishDate[1]);
+    const month = spanishMonths[spanishDate[2].toLowerCase()];
+    const year = Number(spanishDate[3]);
+    if (!month || year < 1) return null;
+    if (
+      spanishDate[4] !== undefined &&
+      (Number(spanishDate[4]) > 23 ||
+        Number(spanishDate[5]) > 59 ||
+        Number(spanishDate[6] ?? 0) > 59)
+    )
+      return null;
+    const start = new Date(Date.UTC(year, month - 1, day));
+    if (
+      start.getUTCFullYear() !== year ||
+      start.getUTCMonth() !== month - 1 ||
+      start.getUTCDate() !== day
+    )
+      return null;
+    // Bogotá is UTC-5. This is 23:59:59.999 local on the stated day.
+    const endOfDayBogota = Date.UTC(year, month - 1, day + 1, 4, 59, 59, 999);
+    return endOfDayBogota < now ? "past" : "upcoming";
+  }
+  if (/\bde\b/iu.test(value)) return null;
+
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(value)) {
+    const [year, month, day] = value.split("-").map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    if (
+      date.getUTCFullYear() !== year ||
+      date.getUTCMonth() !== month - 1 ||
+      date.getUTCDate() !== day
+    )
+      return null;
+    const endOfDayUtc = Date.UTC(year, month - 1, day, 23, 59, 59, 999);
+    return endOfDayUtc < now ? "past" : "upcoming";
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp)
+    ? timestamp < now
+      ? "past"
+      : "upcoming"
+    : null;
+}
+
 /**
  * Build a deterministic, complete view of the saved extraction records. The
  * report is used only as an ordered index; every record and source span is
@@ -232,20 +303,7 @@ export async function buildExhaustiveChecklist(
       mandatory: requirement.mandatory,
       lot: requirement.lot,
       deadline: requirement.deadline,
-      deadlineStatus: requirement.deadline
-        ? (() => {
-            const deadlineMs = Date.parse(
-              /^\d{4}-\d{2}-\d{2}$/u.test(requirement.deadline!)
-                ? `${requirement.deadline}T23:59:59Z`
-                : requirement.deadline!,
-            );
-            return Number.isFinite(deadlineMs)
-              ? deadlineMs < repo.now()
-                ? "past"
-                : "upcoming"
-              : null;
-          })()
-        : null,
+      deadlineStatus: checklistDeadlineStatus(requirement.deadline, repo.now()),
       rule: requirement.rule,
       citations: itemCitations,
     });
@@ -341,7 +399,7 @@ const categoryLabels: Record<Requirement["category"], string> = {
   scope: "Alcance",
   eligibility: "Habilitación",
   experience: "Experiencia",
-  financial: "Capacidad financiera",
+  financial: "Valores y condiciones financieras",
   guarantees: "Garantías",
   documents: "Documentos",
   deliverables: "Entregables",
@@ -349,6 +407,20 @@ const categoryLabels: Record<Requirement["category"], string> = {
   evaluation: "Evaluación",
   other: "Otros",
 };
+
+function sourceStateLabel(state: string) {
+  return (
+    (
+      {
+        ready: "procesado",
+        review_required: "extracción por revisar",
+        pending: "pendiente de extracción",
+        failed: "no se pudo procesar",
+        blocked: "requiere ayuda para acceder",
+      } as Record<string, string>
+    )[state] ?? "estado por verificar"
+  );
+}
 
 export function renderExhaustiveChecklist(
   checklist: ExhaustiveChecklist,
@@ -370,11 +442,11 @@ export function renderExhaustiveChecklist(
     checklist.companyEvidence.note,
     ...checklist.companyEvidence.documents.map(
       (document) =>
-        `- Evidencia de empresa: ${document.documentName} (${document.state}${document.expired ? ", vencido" : ""})`,
+        `- Evidencia de empresa: ${document.documentName} (${sourceStateLabel(document.state)}${document.expired ? ", vencido" : ""})`,
     ),
     ...checklist.evidenceGaps.map(
       (gap) =>
-        `- Fuente pendiente o para revisión: ${gap.documentName} (${gap.state})${gap.error ? `; error: ${gap.error}` : ""}${gap.warnings.length ? `; advertencias: ${gap.warnings.join(", ")}` : ""}`,
+        `- Fuente pendiente o para revisión: ${gap.documentName} (${sourceStateLabel(gap.state)})${gap.error ? "; consulta el documento para resolver el acceso o la extracción" : ""}${gap.warnings.length ? "; contrasta la extracción automática con el original" : ""}`,
     ),
     ...checklist.cautions.map((caution) => `- ${caution}`),
     "",
@@ -392,9 +464,7 @@ export function renderExhaustiveChecklist(
               ]
             : []),
           ...(item.rule
-            ? [
-                `Regla extraída: ${item.rule.field} ${item.rule.operator} ${item.rule.value} ${item.rule.unit}${item.rule.period ? ` (${item.rule.period})` : ""}`,
-              ]
+            ? ["Regla numérica extraída pendiente de verificar"]
             : []),
           ...item.citations.map(
             (citation) =>
