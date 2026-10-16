@@ -139,3 +139,5 @@ only, preserving extracted evidence, reports and audit history. The explicit
 company-evidence deletion operation additionally redacts the extraction and marks
 company evaluations stale; existing reports/conversations may retain quotations.
 Its API requires `confirmed:true`; explain this impact before requesting it.
+
+For complete, cached cross-document synthesis, see [joint dossier analysis](docs/guides/joint-analysis.md).

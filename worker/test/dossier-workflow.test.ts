@@ -56,6 +56,11 @@ const model: ModelProvider = {
           ],
           conflicts: [],
         };
+      case "joint_requirement_review":
+        return {
+          summary: "Prepare the requested software and experience evidence.",
+          candidates: [],
+        };
       case "cross_document_review":
         return {
           summary: "Prepare the requested software and experience evidence.",
@@ -855,4 +860,91 @@ describe("persisted dossier, assessment and chat workflow", () => {
     expect(changed.turns[0].value.stale).toBe(true);
     expect(changed.turns[0].value.analysisPending).toBe(false);
   });
+  it("reviews every requirement and source with one compact joint pass and reuses cached work", async () => {
+    const d = await repo.createOrGetDossier("CO1.REQ.990003");
+    const documentIds = ["joint-source-1", "joint-source-2"];
+    await repo.save(
+      "dossier",
+      d.id,
+      {
+        ...d.value,
+        corpusRevision: 1,
+        documentIds,
+        descriptionId: "joint-description",
+        coverage: { inventoryComplete: true },
+        needsSynthesis: true,
+      },
+      d.revision,
+    );
+    for (const id of documentIds)
+      await repo.save(
+        "document",
+        id,
+        {
+          dossierId: d.id,
+          name: `${id}.pdf`,
+          state: "ready",
+        },
+        0,
+      );
+    for (let i = 0; i < 213; i++)
+      await repo.save(
+        "chunk",
+        `joint-chunk-${String(i).padStart(3, "0")}`,
+        {
+          documentVersionId: documentIds[i < 107 ? 0 : 1],
+          index: i,
+          page: i + 1,
+          text: `Requirement ${i}: The bidder must submit signed evidence item ${i} with the offer.${i === 212 ? " FINAL_REQUIREMENT" : ""}`,
+        },
+        0,
+      );
+    let jointCalls = 0,
+      oldCalls = 0;
+    const inputSizes: number[] = [];
+    const provider: ModelProvider = {
+      id: "compact-joint-fixture",
+      async generate(input) {
+        inputSizes.push(JSON.stringify(input).length);
+        if (input.purpose === "joint_requirement_review") {
+          jointCalls++;
+          return {
+            summary:
+              "Todos los requisitos deben revisarse antes de preparar la oferta.",
+            candidates: [],
+          };
+        }
+        if (input.purpose === "cross_document_review") oldCalls++;
+        return model.generate(input);
+      },
+    };
+    const report = await synthesizeDossier(repo, d.id, 1, provider);
+    expect(oldCalls).toBe(0);
+    expect(jointCalls).toBe(1);
+    expect(Math.max(...inputSizes)).toBeLessThanOrEqual(48000);
+    expect(report.coverage.total).toBe(2);
+    expect(report.coverage.indexed).toBe(2);
+    expect(report.requirementIds).toHaveLength(213);
+    expect(report.citations).toHaveLength(213);
+    const saved = await Promise.all(
+      report.requirementIds.map((id) => repo.read<any>("requirement", id)),
+    );
+    expect(saved.map((r) => r.value.wording)).toEqual(
+      Array.from(
+        { length: 213 },
+        (_, i) =>
+          `Requirement ${i}: The bidder must submit signed evidence item ${i} with the offer.${i === 212 ? " FINAL_REQUIREMENT" : ""}`,
+      ),
+    );
+    expect(
+      new Set(
+        saved.flatMap((r) =>
+          r.value.citations.map((c: any) => c.documentVersionId),
+        ),
+      ),
+    ).toEqual(new Set(documentIds));
+    const calls = inputSizes.length;
+    await synthesizeDossier(repo, d.id, 1, provider);
+    expect(inputSizes).toHaveLength(calls);
+  }, 20000);
 });

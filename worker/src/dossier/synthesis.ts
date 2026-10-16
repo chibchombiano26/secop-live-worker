@@ -5,6 +5,7 @@ import { splitEvidence, type EvidenceChunk } from "./extraction";
 import type { DocumentVersion } from "./inventory";
 import type { ModelProvider } from "./model";
 import { sha256 } from "./downloads";
+import { reviewJointRequirements } from "./joint-review";
 export const citationSchema = z.object({
   documentVersionId: z.string().min(1).max(200),
   page: z.number().int().positive().optional(),
@@ -235,6 +236,7 @@ export async function synthesizeDossier(
   dossierId: string,
   revision: number,
   model: ModelProvider,
+  checkpoint?: (progress: Record<string, unknown>) => Promise<void>,
 ) {
   const { dossier, chunks } = await dossierEvidence(repo, dossierId);
   if (dossier.value.corpusRevision !== revision)
@@ -270,110 +272,63 @@ export async function synthesizeDossier(
       .map((d) => d.id),
     catalogOnly: true,
   };
+  let fragmentsVisited = 0;
+  let extractionCacheHits = 0;
+  await checkpoint?.({
+    stage: "extracting_requirements",
+    documentsTotal: docs.length,
+  });
   const parts = await extractRequirements(chunks, model, {
     get: async (key) => {
       try {
-        return (await repo.read("report", `part.${key}`)).value;
+        const cached = (await repo.read("report", `part.${key}`)).value;
+        extractionCacheHits++;
+        return cached;
       } catch (e) {
         if (e instanceof DossierError && e.code === "NOT_FOUND") return null;
         throw e;
+      } finally {
+        fragmentsVisited++;
+        if (fragmentsVisited % 20 === 0)
+          await checkpoint?.({
+            stage: "extracting_requirements",
+            fragmentsVisited,
+            extractionCacheHits,
+          });
       }
     },
     put: async (key, value) => {
       await repo.upsert("report", `part.${key}`, value);
     },
   });
-  // Bounded groups inspect all requirements; no suffix is silently dropped.
-  const overviews: string[] = [];
-  const conflicts = [...parts.conflicts];
-  const groups: Requirement[][] = [];
-  if (JSON.stringify(parts.requirements).length < 10000) {
-    if (parts.requirements.length) groups.push(parts.requirements);
-  } else {
-    const blocks: Requirement[][] = [];
-    let current: Requirement[] = [];
-    let size = 0;
-    for (const req of parts.requirements) {
-      const length = JSON.stringify(req).length;
-      if (current.length && size + length > 8000) {
-        blocks.push(current);
-        current = [];
-        size = 0;
-      }
-      current.push(req);
-      size += length;
-    }
-    if (current.length) blocks.push(current);
-    for (let i = 0; i < blocks.length; i++)
-      for (let j = i; j < blocks.length; j++)
-        groups.push(i === j ? blocks[i] : [...blocks[i], ...blocks[j]]);
-  }
-  const amendments: Array<{
-    previous: number;
-    replacement: number;
-    reason: string;
-    citations: Citation[];
-  }> = [];
-  for (const group of groups) {
-    const key = await sha256(`cross:v2:${model.id}:${JSON.stringify(group)}`);
-    let cached: unknown;
-    try {
-      cached = (await repo.read("report", `cross.${key}`)).value;
-    } catch (e) {
-      if (!(e instanceof DossierError) || e.code !== "NOT_FOUND") throw e;
-    }
-    const outputSchema = z.object({
-      summary: z.string().max(12000),
-      conflicts: z.array(z.string().max(2000)).max(100),
-      amendments: z
-        .array(
-          z.object({
-            previous: z.number().int().min(0),
-            replacement: z.number().int().min(0),
-            reason: z.string().max(2000),
-            citations: z.array(citationSchema).min(1),
-          }),
-        )
-        .max(100),
-    });
-    const output = outputSchema.parse(
-      cached ??
-        (await model.generate({
-          purpose: "cross_document_review",
-          outputSchema: z.toJSONSchema(outputSchema),
-          evidence: group.flatMap((r) =>
-            r.citations.map((c, index) => ({
-              documentVersionId: c.documentVersionId,
-              page: c.page,
-              section: c.section,
-              text: c.excerpt,
-              index,
-            })),
-          ),
-          context: { requirements: group, coverage },
-          instructions:
-            "Return {summary,conflicts:string[],amendments:[{previous:number,replacement:number,reason,citations}]}. Write a substantive Spanish briefing in summary: what is being procured, scope and deliverables, eligibility and experience, financial thresholds with units/periods, documents to prepare, deadlines, evaluation criteria, guarantees/contract obligations, risks and evidence still missing. Use only supplied requirements and quoted evidence; explicitly identify sections not established by this source group and do not imply readiness. Compare every supplied requirement across sources. Indices address this supplied group. State amendments only when quoted evidence explicitly changes a prior term. Flag ambiguous conflicts; a later date does not supersede everything.",
-        })),
-    );
-    for (const change of output.amendments) {
-      if (
-        change.previous >= group.length ||
-        change.replacement >= group.length ||
-        change.previous === change.replacement
-      )
-        throw new DossierError("INVALID_AMENDMENT", 502, true);
-      change.citations = validateCitations(change.citations, chunks);
-      amendments.push({
-        ...change,
-        previous: parts.requirements.indexOf(group[change.previous]),
-        replacement: parts.requirements.indexOf(group[change.replacement]),
-      });
-      conflicts.push(`Review amendment: ${change.reason}`);
-    }
-    if (!cached) await repo.upsert("report", `cross.${key}`, output);
-    overviews.push(output.summary);
-    conflicts.push(...output.conflicts);
-  }
+  const joint = await reviewJointRequirements(
+    parts.requirements,
+    model,
+    coverage,
+    {
+      get: async (key) => {
+        try {
+          return (await repo.read("report", `joint.${key}`)).value;
+        } catch (error) {
+          if (error instanceof DossierError && error.code === "NOT_FOUND")
+            return null;
+          throw error;
+        }
+      },
+      put: async (key, value) => {
+        await repo.upsert("report", `joint.${key}`, value);
+      },
+    },
+    checkpoint
+      ? (progress) => checkpoint({ ...progress, stage: progress.phase })
+      : undefined,
+  );
+  const overviews = joint.summaries;
+  const conflicts = [...parts.conflicts, ...joint.conflicts];
+  const amendments = joint.amendments.map((change) => ({
+    ...change,
+    citations: validateCitations(change.citations, chunks),
+  }));
   const requirementIds: string[] = [];
   for (let i = 0; i < parts.requirements.length; i++) {
     const id = await sha256(
@@ -392,6 +347,7 @@ export async function synthesizeDossier(
     model: model.id,
     generatedAt: new Date(repo.now()).toISOString(),
     coverage,
+    sourceSummaries: parts.summaries,
     summary: overviews.length
       ? [...new Set(overviews)].join("\n\n")
       : parts.summaries.join("\n\n"),
@@ -401,9 +357,22 @@ export async function synthesizeDossier(
       previousRequirementId: requirementIds[a.previous],
       replacementRequirementId: requirementIds[a.replacement],
     })),
+    candidateReviews: joint.candidateReviews.map((review) => ({
+      ...review,
+      leftRequirementId: requirementIds[review.left],
+      rightRequirementId: requirementIds[review.right],
+      citations: validateCitations(review.citations, chunks),
+    })),
     citations: parts.requirements.flatMap((r) => r.citations),
     requirementIds,
     readiness: "requires_company_assessment",
+    analysis: {
+      ...joint.metrics,
+      fragmentsVisited,
+      extractionCacheHits,
+      requirementsPreserved: requirementIds.length,
+      documentCount: docs.length,
+    },
   };
   const latest = await repo.readDossier(dossierId);
   if (latest.value.corpusRevision !== revision)

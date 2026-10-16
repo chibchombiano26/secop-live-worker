@@ -179,6 +179,7 @@ export async function executeProcessingJob(
         job.targetId,
         Number(dossier.value.corpusRevision),
         provider,
+        checkpoint,
       );
       await checkpoint({
         stage: "analyzed",
