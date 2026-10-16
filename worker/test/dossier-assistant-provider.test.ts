@@ -151,25 +151,95 @@ describe("native assistant private provider", () => {
     expect(openSourceHead).toHaveBeenCalledTimes(1);
     openSourceHead.mockRestore();
     expect(opened.source.url).toMatch(/^https:\/\/test\.invalid\/private\/source\//);
-    expect(opened.source.url).toMatch(/#page=3$/);
+    expect(opened.source.url).toMatch(/\/view#page=3$/);
+    const token = new URL(opened.source.url).pathname.split("/").at(-2)!;
     const response = await privateApiRequest(
-      new Request(opened.source.url),
+      new Request(`https://test.invalid/private/source/${token}`),
       env,
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("application/pdf");
-    expect(response.headers.get("content-disposition")).toMatch(/inline/);
+    expect(response.headers.get("content-disposition")).toMatch(/attachment/);
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(pdf);
-    const token = new URL(opened.source.url).pathname.split("/").at(-1)!;
     await expect(readSourceTicket(env, `${token.slice(0, -1)}x`)).rejects.toMatchObject({
       code: "SOURCE_TICKET_INVALID",
     });
     await expect(readSourceTicket(env, token, Number.MAX_SAFE_INTEGER)).rejects.toMatchObject({
       code: "SOURCE_TICKET_INVALID",
     });
+    const viewer = await privateApiRequest(
+      new Request(`https://test.invalid/private/source/${token}/view#page=3`),
+      env,
+    );
+    const html = await viewer.text();
+    expect(viewer.status).toBe(200);
+    expect(viewer.headers.get("content-type")).toContain("text/html");
+    expect(viewer.headers.get("cache-control")).toBe("no-store");
+    expect(viewer.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(viewer.headers.get("content-security-policy")).toContain("default-src 'none'");
+    expect(viewer.headers.get("content-security-policy")).toContain("'wasm-unsafe-eval'");
+    expect(html).toContain("Página anterior");
+    expect(html).toContain("Descargar original");
+    expect(html).toContain(">Reintentar</button>");
+    expect(html).toContain("La cita apunta a la página");
+    expect(html).toContain("Math.min(2,window.devicePixelRatio||1)");
+    expect(html).toContain("generation!==renderGeneration");
+    expect(html).toContain("previous.cancel();try{await previous.promise");
+    expect(html).toContain("n>pdf.numPages");
+    expect(html).toContain("/private/source-assets/pdfjs-6.4.299/pdf.mjs");
+    expect(html).not.toContain("https://cdn");
+    const sourceId = token.split(".")[1];
+    const sourceTicket = await repo.read<any>("source", sourceId);
+    await repo.save(
+      "source",
+      sourceId,
+      { ...sourceTicket.value, expiresAt: 0 },
+      sourceTicket.revision,
+    );
+    const expiredViewer = await privateApiRequest(
+      new Request(`https://test.invalid/private/source/${token}/view`),
+      env,
+    );
+    expect(expiredViewer.status).toBe(404);
+  });
+  it("serves only fixed self-hosted PDF.js assets with immutable cache headers", async () => {
+    for (const path of [
+      "pdf.mjs",
+      "pdf.worker.mjs",
+      "wasm/openjpeg.wasm",
+      "standard_fonts/LiberationSans-Regular.ttf",
+      "cmaps/UniJIS-UCS2-H.bcmap",
+    ]) {
+      const response = await privateApiRequest(
+        new Request(`https://test.invalid/private/source-assets/pdfjs-6.4.299/${path}`),
+        env,
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toContain("immutable");
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(response.headers.get("content-type")).toBeTruthy();
+      expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(0);
+    }
+    const traversal = await privateApiRequest(
+      new Request("https://test.invalid/private/source-assets/pdfjs-6.4.299/cmaps/%2e%2e%2fpackage.json"),
+      env,
+    );
+    expect(traversal.status).toBe(404);
+    for (const inheritedPath of [
+      "constructor",
+      "__proto__",
+      "cmaps/__proto__.bcmap",
+      "cmaps/toString.bcmap",
+    ]) {
+      const response = await privateApiRequest(
+        new Request(`https://test.invalid/private/source-assets/pdfjs-6.4.299/${inheritedPath}`),
+        env,
+      );
+      expect(response.status).toBe(404);
+    }
   });
   it("rejects unknown citations and prevents ticket use by another owner", async () => {
     const pdf = new TextEncoder().encode("%PDF-1.7\noriginal tender");

@@ -1,7 +1,12 @@
 name = "secop-live-worker"
-main = "src/index.ts"
+main = "dist/bundle.js"
 compatibility_date = "2026-10-01"
 compatibility_flags = ["global_fetch_strictly_public"]
+no_bundle = true
+
+[build]
+command = "npm run bundle"
+watch_dir = ["src", "build.mjs"]
 
 [vars]
 CACHE_TTL = "600"

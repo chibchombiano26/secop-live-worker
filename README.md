@@ -18,15 +18,15 @@ tofu/            versions/variables/main + modules/{worker,docker}
 ```bash
 cd worker && npm install
 npm test && npm run typecheck
-npx wrangler dev   # local smoke (no account needed)
+npm run dev        # Wrangler runs the custom PDF.js-aware bundle step first
 ```
 
 ## Deploy with OpenTofu
 
 ```bash
-cd tofu
+cd worker && npm run bundle   # builds dist/bundle.js used by OpenTofu
+cd ../tofu
 cp dev.tfvars.example dev.auto.tfvars   # fill secrets (never commit)
-npm run bundle --prefix ../worker       # dist/bundle.js for the provider
 docker run --rm -v "$PWD:/tofu" -w /tofu ghcr.io/opentofu/opentofu:latest init
 # Cloudflare only:
 docker run --rm -v "$PWD:/tofu" -w /tofu ghcr.io/opentofu/opentofu:latest \
@@ -84,6 +84,14 @@ The optional Docker target remains a public proxy; private features require the
 Worker bindings and never fall back to in-memory persistence. Local integration
 tests use real Miniflare D1/R2. Durable queued jobs use leases and a persisted
 outbox; scheduled reconciliation redispatches missed or expired work each minute.
+
+The native dossier chat opens cited stored PDFs through the worker-owned
+`GET /private/source/{ticket}/view` page. It serves a self-hosted, pinned PDF.js
+viewer and fixed versioned assets under `/private/source-assets/`; original files
+remain available as downloads at `GET /private/source/{ticket}`. Tickets are
+owner- and dossier-bound, expire after ten minutes, and viewer responses are
+private/no-store with a restrictive same-origin policy. Versioned viewer assets
+use immutable caching; no PDF is sent to a third-party viewer or CDN.
 
 ### Extraction providers
 

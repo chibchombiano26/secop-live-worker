@@ -19,7 +19,8 @@ import {
 import { readAssessment, reviewFinding, findingSchema } from "./assessment";
 import { readConversation, type ChatInput } from "./conversations";
 import { createUploadTicket, acceptUploadTicket, uploadPage } from "./uploads";
-import { readSourceTicket } from "./sources";
+import { readSourceTicket, sourceViewerPage } from "./sources";
+import { pdfjsAssets, pdfjsCMapAssets, PDFJS_VERSION } from "./pdfjs-assets";
 import { boundedBytes } from "./downloads";
 import type { DocumentVersion } from "./inventory";
 import type { EvidenceChunk } from "./extraction";
@@ -769,10 +770,48 @@ export async function privateApiRequest(
       return Response.json(privateOpenApi(), { headers });
     if (url.pathname === "/private/upload" && request.method === "GET")
       return uploadPage();
+    const assetPrefix = `/private/source-assets/pdfjs-${PDFJS_VERSION}/`;
+    if (url.pathname.startsWith(assetPrefix)) {
+      if (request.method !== "GET")
+        throw new DossierError("METHOD_NOT_ALLOWED", 405);
+      const assetPath = url.pathname.slice(assetPrefix.length);
+      const asset = Object.hasOwn(pdfjsAssets, assetPath)
+        ? pdfjsAssets[assetPath]
+        : undefined;
+      const cmapMatch = /^cmaps\/([A-Za-z0-9_-]+\.bcmap)$/.exec(assetPath);
+      const cmap =
+        cmapMatch && Object.hasOwn(pdfjsCMapAssets, cmapMatch[1])
+          ? pdfjsCMapAssets[cmapMatch[1]]
+          : undefined;
+      if (!asset && !cmap) throw new DossierError("NOT_FOUND", 404);
+      const isCMap = Boolean(cmap);
+      const body = isCMap
+        ? Uint8Array.from(atob(cmap!), (character) => character.charCodeAt(0))
+        : asset!.encoding === "base64"
+          ? Uint8Array.from(atob(asset!.body), (character) => character.charCodeAt(0))
+          : asset!.body;
+      return new Response(body, {
+        status: 200,
+        headers: {
+          "Content-Type": isCMap ? "application/octet-stream" : asset!.contentType,
+          "Cache-Control": "public, max-age=31536000, immutable",
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    }
     if (url.pathname.startsWith("/private/source/")) {
       if (request.method !== "GET")
         throw new DossierError("METHOD_NOT_ALLOWED", 405);
-      const token = url.pathname.slice("/private/source/".length);
+      const path = url.pathname.slice("/private/source/".length).split("/");
+      if (path.length !== 1 && !(path.length === 2 && path[1] === "view"))
+        throw new DossierError("NOT_FOUND", 404);
+      let token: string;
+      try {
+        token = decodeURIComponent(path[0]);
+      } catch {
+        throw new DossierError("SOURCE_TICKET_INVALID", 404);
+      }
+      if (path.length === 2) return await sourceViewerPage(env, token);
       return await readSourceTicket(env, token);
     }
     if (url.pathname === "/private/upload" && request.method === "POST") {

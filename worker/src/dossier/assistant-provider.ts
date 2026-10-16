@@ -123,7 +123,7 @@ export async function runAssistantProvider(
       revision: 0,
       messages: [],
       source: {
-        url: `${origin}/private/source/${encodeURIComponent(ticket.token)}${pageHash}`,
+        url: `${origin}/private/source/${encodeURIComponent(ticket.token)}/view${pageHash}`,
         ...(ticket.page ? { page: ticket.page } : {}),
       },
     };

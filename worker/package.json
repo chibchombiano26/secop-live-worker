@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "build": "tsc -p tsconfig.json",
-    "bundle": "esbuild src/index.ts --bundle --format=esm --platform=neutral --conditions=workerd --main-fields=module,main --external:cloudflare:workers --outfile=dist/bundle.js --log-level=warning",
+    "bundle": "node build.mjs",
     "test": "vitest run",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit"
@@ -15,6 +15,7 @@
     "@cloudflare/workers-oauth-provider": "^1.2.3",
     "@modelcontextprotocol/server": "^2.0.0",
     "fflate": "^0.8.2",
+    "pdfjs-dist": "6.4.299",
     "zod": "^4.0.0"
   },
   "devDependencies": {
