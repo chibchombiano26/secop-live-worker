@@ -126,6 +126,19 @@ describe("native assistant private provider", () => {
       request: { method: "load" },
     });
     expect(loaded.messages[1].citations[0].canOpen).toBe(true);
+    const unrelatedTurns = Array.from({ length: 30 }, (_, index) => `unrelated-turn-${index}`);
+    for (const turnId of unrelatedTurns)
+      await repo.save("message", turnId, {
+        userMessage: "Unrelated history", answer: "Not needed to open one source.", citations: [],
+      }, 0);
+    const conversation = await repo.read<any>("conversation", "conversation");
+    await repo.save(
+      "conversation",
+      "conversation",
+      { ...conversation.value, turnIds: [...conversation.value.turnIds, ...unrelatedTurns] },
+      conversation.revision,
+    );
+    const openSourceHead = vi.spyOn(DossierRepository.prototype, "headFile");
     const opened = await call({
       context: { dossierId: "CO1.REQ.1" },
       request: {
@@ -134,6 +147,9 @@ describe("native assistant private provider", () => {
         citationId: "S001",
       },
     });
+    expect(opened.messages).toEqual([]);
+    expect(openSourceHead).toHaveBeenCalledTimes(1);
+    openSourceHead.mockRestore();
     expect(opened.source.url).toMatch(/^https:\/\/test\.invalid\/private\/source\//);
     expect(opened.source.url).toMatch(/#page=3$/);
     const response = await privateApiRequest(

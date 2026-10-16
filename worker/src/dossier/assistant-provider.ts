@@ -57,9 +57,6 @@ export async function runAssistantProvider(
   }
   let pendingJobId: string | undefined;
   let preferredConversationId: string | undefined;
-  let selectedSource:
-    | { documentId: string; dossierId: string; page?: number }
-    | undefined;
   const documents = new Map<
     string,
     { name: string; canOpen: boolean }
@@ -94,7 +91,6 @@ export async function runAssistantProvider(
     const conversationValue = JSON.parse(found.value) as Conversation;
     if (!matches(conversationValue))
       throw new DossierError("CONVERSATION_CONTEXT_MISMATCH", 403);
-    preferredConversationId = found.id;
     const turn = await repo.read<Record<string, any>>("message", request.messageId);
     const sources = turn.value.checklist?.sources ?? turn.value.citations ?? [];
     const index = Number(request.citationId.slice(1)) - 1;
@@ -113,18 +109,23 @@ export async function runAssistantProvider(
     const canOpen = await hasStoredPdf(repo, document.value, context.dossierId);
     if (!canOpen)
       throw new DossierError("SOURCE_NOT_AVAILABLE", 404);
-    documents.set(citation.documentVersionId, {
-      name: typeof document.value.name === "string"
-        ? document.value.name
-        : "Fuente del expediente",
-      canOpen,
-    });
-    selectedSource = {
+    const page = Number.isSafeInteger(citation.page) && citation.page > 0
+      ? citation.page
+      : undefined;
+    const ticket = await createSourceTicket(repo, {
       documentId: citation.documentVersionId,
       dossierId: context.dossierId,
-      ...(Number.isSafeInteger(citation.page) && citation.page > 0
-        ? { page: citation.page }
-        : {}),
+      document: document.value,
+      ...(page === undefined ? {} : { page }),
+    });
+    const pageHash = ticket.page ? `#page=${ticket.page}` : "";
+    return {
+      revision: 0,
+      messages: [],
+      source: {
+        url: `${origin}/private/source/${encodeURIComponent(ticket.token)}${pageHash}`,
+        ...(ticket.page ? { page: ticket.page } : {}),
+      },
     };
   } else if (request.method === "send") {
     await correlate(request);
@@ -355,18 +356,6 @@ export async function runAssistantProvider(
       complete: analysisComplete && pending === 0 && review === 0,
       label: `${context.dossierId} · ${selectedCompany?.value.name ?? "Solo la licitación"} · ${analysisComplete ? "Análisis conjunto completado" : "Análisis conjunto pendiente"} · ${coverage?.indexed ?? 0}/${coverage?.total ?? 0} documentos · ${pending} pendientes · ${review} ${review === 1 ? "extracción" : "extracciones"} por revisar`,
     },
-    ...(selectedSource
-      ? {
-          source: await (async () => {
-            const ticket = await createSourceTicket(repo, selectedSource!);
-            const pageHash = ticket.page ? `#page=${ticket.page}` : "";
-            return {
-              url: `${origin}/private/source/${encodeURIComponent(ticket.token)}${pageHash}`,
-              ...(ticket.page ? { page: ticket.page } : {}),
-            };
-          })(),
-        }
-      : {}),
   };
   if (new TextEncoder().encode(JSON.stringify(result)).length > 900_000)
     throw new DossierError("ASSISTANT_HISTORY_TOO_LARGE", 413);

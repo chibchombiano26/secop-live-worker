@@ -35,11 +35,16 @@ export async function createSourceTicket(
   input: {
     documentId: string;
     dossierId: string;
+    document: { dossierId?: unknown; fileId?: unknown; state?: unknown };
     page?: number;
   },
 ) {
-  const document = await repo.read<DocumentVersion>("document", input.documentId);
-  if (!(await hasStoredPdf(repo, document.value, input.dossierId)))
+  const document = input.document;
+  if (
+    document.dossierId !== input.dossierId ||
+    typeof document.fileId !== "string" ||
+    document.state === "deleted"
+  )
     throw invalidTicket();
   const id = crypto.randomUUID();
   const secret = crypto.randomUUID() + crypto.randomUUID();
@@ -52,7 +57,7 @@ export async function createSourceTicket(
       expiresAt,
       documentId: input.documentId,
       dossierId: input.dossierId,
-      fileId: document.value.fileId!,
+      fileId: document.fileId,
       ...(input.page === undefined ? {} : { page: input.page }),
     },
     0,
