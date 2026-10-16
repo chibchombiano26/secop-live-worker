@@ -32,7 +32,7 @@ let now = Date.parse("2026-10-15T12:00:00Z");
 const model: ModelProvider = {
   id: "fixture-model",
   async generate(input) {
-    const c = input.evidence.find(c => c.text.length >= 3)!;
+    const c = input.evidence.find(c => c.text.replace(/\[E\d+\.\d+\] /g, "").length >= 3)!;
     switch (input.purpose) {
       case "extract_requirements":
         return {
@@ -93,8 +93,7 @@ const model: ModelProvider = {
           insufficientEvidence: false,
           citations: [
             {
-              sourceRef: `E${input.evidence.indexOf(c) + 1}`,
-              excerpt: c.text.slice(0, 100),
+              sourceRef: `E${input.evidence.indexOf(c) + 1}.1`,
             },
           ],
         };
@@ -737,8 +736,7 @@ describe("persisted dossier, assessment and chat workflow", () => {
             insufficientEvidence: false,
             citations: [
               {
-                sourceRef: `E${input.evidence.indexOf(source) + 1}`,
-                excerpt: source.text,
+                sourceRef: `E${input.evidence.indexOf(source) + 1}.1`,
               },
             ],
           };

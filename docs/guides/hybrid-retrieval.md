@@ -125,10 +125,13 @@ Every current owner-scoped tender chunk and nonexpired selected-company chunk
 is supplied, including sources outside the top ten vector/lexical hits. Vectorize
 remains an index for focused search, not proof of a complete dossier review.
 
-Citation schemas use short per-request references instead of embedding repeated
-copies of source text in schema enums. The server resolves each reference to its
-original document/page and validates its exact continuous quotation. It does not
-accept invented source IDs or quotations. Historical answer excerpts are excluded
+Citation schemas use short per-request span references instead of embedding repeated
+copies of source text in schema enums. Markers partition every character of the
+original source text; no text is omitted between markers. The model selects a
+supporting reference, and the server attaches the exact original quotation and
+document/page. The model does not generate quotation text. Invented references
+are rejected. Source text and citation schemas therefore do not duplicate the
+entire corpus, and paraphrased quotations cannot trigger recurring retries. Historical answer excerpts are excluded
 from factual context because an earlier retrieval error must not become evidence.
 
 The 48,000-character input bound remains below the deployed model's configured

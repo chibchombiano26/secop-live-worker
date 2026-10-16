@@ -120,14 +120,26 @@ describe("grounded tender conversation", () => {
       for (const c of input.evidence) visited.add(c.documentVersionId);
       if (input.purpose === "tender_conversation") synthesis = input;
       return { answer: input.evidence.map(c => c.text.split(". ")[0]).join("; "), insufficientEvidence: false,
-        citations: input.evidence.map((c, i) => ({ sourceRef: `E${i + 1}`, excerpt: c.text.split(". ")[0] })) };
+        citations: input.evidence.map((c, i) => ({ sourceRef: `E${i + 1}.1` })) };
     } }, { purpose: "tender_conversation", evidence, instructions: "Use all sources" });
     expect(visited.size).toBe(8);
     expect(synthesis.context.corpusCoverage).toMatchObject({ sourceChunksTotal: 8, sourceChunksReviewed: 8 });
     expect(result.citations.map(c => c.documentVersionId)).toEqual(evidence.map(c => c.documentVersionId));
-    expect(synthesis.evidence.every((c: any) => c.text.startsWith("Unique obligation"))).toBe(true);
+    expect(synthesis.evidence.every((c: any) => c.text.includes("Unique obligation") && c.text.length < 600)).toBe(true);
   });
 
+  it("resolves source span references to exact original quotes without model-generated excerpts", async () => {
+    let sent: any;
+    const original = "Primera obligación. " + "Requisito contractual. ".repeat(70);
+    const result = await generateDossierAnswer({id: "test", generate: async input => {
+      sent = input; return {answer: "Condición", insufficientEvidence: false, citations: [{sourceRef: "E1.2"}]};
+    }}, {purpose: "test", evidence: [{documentVersionId: "doc", page: 3, index: 0, text: original}], instructions: "Answer"});
+    expect(original).toContain(result.citations[0].excerpt);
+    expect(result.citations[0].page).toBe(3);
+    expect(sent.outputSchema.properties.citations.items.properties).not.toHaveProperty("excerpt");
+    const recovered = sent.evidence[0].text.replace(/\[E\d+\.\d+\] /g, "");
+    expect(recovered).toBe(original);
+  });
   it("returns canonical source whitespace for citations used by corpus synthesis", async () => {
     const result = await generateDossierAnswer({id: "test", generate: async () => ({answer: "Dos", insufficientEvidence: false, citations: [{sourceRef: "E1", excerpt: "mínimo dos certificaciones"}]})}, {purpose: "test", evidence: [{documentVersionId: "doc", index: 0, page: 1, text: "Se exigen mínimo dos\ncertificaciones."}], instructions: "Answer"});
     expect(result.citations[0].excerpt).toBe("mínimo dos\ncertificaciones");
