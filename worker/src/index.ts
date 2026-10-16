@@ -1,4 +1,7 @@
-import { sweepOriginalRetention } from "./dossier/retention";
+import {
+  sweepExpiredProposals,
+  sweepOriginalRetention,
+} from "./dossier/retention";
 import { privateApiRequest } from "./dossier/api";
 import { dispatchJobs, processJob } from "./dossier/jobs";
 import {
@@ -334,6 +337,7 @@ export default {
       Promise.all([
         dispatchJobs(env),
         sweepOriginalRetention(env),
+        sweepExpiredProposals(env),
         recoverTerminalExtractions(env),
       ]),
     );

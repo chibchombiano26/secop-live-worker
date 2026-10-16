@@ -93,6 +93,19 @@ owner- and dossier-bound, expire after ten minutes, and viewer responses are
 private/no-store with a restrictive same-origin policy. Versioned viewer assets
 use immutable caching; no PDF is sent to a third-party viewer or CDN.
 
+The native assistant provider advertises a `proposal-docx` document action for
+the selected tender when its report is current. Its `generate-document` request
+rechecks the current complete tender report and returns an editable Spanish
+DOCX draft. The draft includes the full saved requirement ledger and source
+excerpts, and, when selected, the current company profile and its evidence
+excerpts. Without a selected profile it leaves explicit proponent placeholders.
+It also includes response prompts, review warnings and non-certification
+language. It does not
+assert compliance or submit anything. Oversized source material and stale or
+missing reports fail explicitly; the download is an owner-, tender- and
+company-revision-bound private ticket that expires after ten minutes and is
+served with attachment, no-store and content-sniffing protections.
+
 ### Extraction providers
 
 For an optional private CPU OCR fallback on Cloudflare Containers, see

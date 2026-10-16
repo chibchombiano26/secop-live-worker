@@ -20,6 +20,7 @@ import { readAssessment, reviewFinding, findingSchema } from "./assessment";
 import { readConversation, type ChatInput } from "./conversations";
 import { createUploadTicket, acceptUploadTicket, uploadPage } from "./uploads";
 import { readSourceTicket, sourceViewerPage } from "./sources";
+import { readProposalTicket } from "./proposal";
 import { pdfjsAssets, pdfjsCMapAssets, PDFJS_VERSION } from "./pdfjs-assets";
 import { boundedBytes } from "./downloads";
 import type { DocumentVersion } from "./inventory";
@@ -271,7 +272,12 @@ export async function executePrivateOperation(
   requirePrivateContext(context, route.scope);
   const input = route.schema.parse(raw);
   const repo = new DossierRepository(env, context);
-  const readRequest = route.method === "GET" || name === "assistant";
+  const proposalGeneration =
+    name === "assistant" &&
+    (input as z.infer<typeof assistantProviderSchema>).request.method ===
+      "generate-document";
+  const readRequest =
+    route.method === "GET" || (name === "assistant" && !proposalGeneration);
   await consumeOwnerLimit(
     repo,
     readRequest ? "read" : "write",
@@ -788,12 +794,16 @@ export async function privateApiRequest(
       const body = isCMap
         ? Uint8Array.from(atob(cmap!), (character) => character.charCodeAt(0))
         : asset!.encoding === "base64"
-          ? Uint8Array.from(atob(asset!.body), (character) => character.charCodeAt(0))
+          ? Uint8Array.from(atob(asset!.body), (character) =>
+              character.charCodeAt(0),
+            )
           : asset!.body;
       return new Response(body, {
         status: 200,
         headers: {
-          "Content-Type": isCMap ? "application/octet-stream" : asset!.contentType,
+          "Content-Type": isCMap
+            ? "application/octet-stream"
+            : asset!.contentType,
           "Cache-Control": "public, max-age=31536000, immutable",
           "X-Content-Type-Options": "nosniff",
         },
@@ -813,6 +823,19 @@ export async function privateApiRequest(
       }
       if (path.length === 2) return await sourceViewerPage(env, token);
       return await readSourceTicket(env, token);
+    }
+    if (url.pathname.startsWith("/private/proposal/")) {
+      if (request.method !== "GET")
+        throw new DossierError("METHOD_NOT_ALLOWED", 405);
+      const path = url.pathname.slice("/private/proposal/".length);
+      if (!path || path.includes("/")) throw new DossierError("NOT_FOUND", 404);
+      let token: string;
+      try {
+        token = decodeURIComponent(path);
+      } catch {
+        throw new DossierError("PROPOSAL_TICKET_INVALID", 404);
+      }
+      return await readProposalTicket(env, token);
     }
     if (url.pathname === "/private/upload" && request.method === "POST") {
       const token = request.headers.get("X-Upload-Ticket") ?? "";
@@ -900,7 +923,13 @@ export async function privateApiRequest(
           recovery:
             e.code === "REVISION_CONFLICT"
               ? "Reload the latest saved state before retrying."
-              : "Inspect dossier progress and retry the affected operation.",
+              : e.code === "PROPOSAL_REPORT_NOT_READY"
+                ? "El análisis conjunto del expediente aún no está listo o quedó desactualizado. Complete o actualice el análisis y vuelva a generar la propuesta."
+                : e.code === "PROPOSAL_COMPANY_REQUIRED"
+                  ? "Seleccione un perfil de empresa para generar la propuesta."
+                  : e.code === "PROPOSAL_CONTEXT_CHANGED"
+                    ? "El expediente o el perfil de empresa cambió durante la generación. Vuelva a cargar el chat e intente otra vez."
+                    : "Inspect dossier progress and retry the affected operation.",
         },
       },
       { status: e.status, headers },

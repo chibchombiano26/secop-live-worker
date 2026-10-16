@@ -18,7 +18,8 @@ export type EntityKind =
   | "conversation"
   | "message"
   | "upload"
-  | "source";
+  | "source"
+  | "proposal";
 export type Stored<T> = {
   id: string;
   revision: number;
