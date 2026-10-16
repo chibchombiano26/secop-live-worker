@@ -132,7 +132,17 @@ export async function runAssistantProvider(
   let conversation: Awaited<ReturnType<typeof readConversation>> | null = null;
   if (preferredConversationId) {
     try {
-      conversation = await readConversation(repo, preferredConversationId);
+      conversation = await readConversation(repo, preferredConversationId, 0);
+      if (conversation.value.turnIds.length > 1000)
+        throw new DossierError("ASSISTANT_HISTORY_TOO_LARGE", 413);
+      let cursor = conversation.nextCursor;
+      while (cursor !== null) {
+        const page = await readConversation(repo, preferredConversationId, cursor);
+        if (page.revision !== conversation.revision)
+          throw new DossierError("REVISION_CONFLICT", 409, true);
+        conversation.turns.push(...page.turns);
+        cursor = page.nextCursor;
+      }
     } catch (error) {
       if (
         !(error instanceof DossierError) ||

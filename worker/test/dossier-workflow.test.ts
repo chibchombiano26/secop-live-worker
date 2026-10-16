@@ -32,7 +32,7 @@ let now = Date.parse("2026-10-15T12:00:00Z");
 const model: ModelProvider = {
   id: "fixture-model",
   async generate(input) {
-    const c = input.evidence[0];
+    const c = input.evidence.find(c => c.text.length >= 3)!;
     switch (input.purpose) {
       case "extract_requirements":
         return {
@@ -93,9 +93,7 @@ const model: ModelProvider = {
           insufficientEvidence: false,
           citations: [
             {
-              documentVersionId: c.documentVersionId,
-              page: c.page,
-              section: c.section,
+              sourceRef: `E${input.evidence.indexOf(c) + 1}`,
               excerpt: c.text.slice(0, 100),
             },
           ],
@@ -656,7 +654,7 @@ describe("persisted dossier, assessment and chat workflow", () => {
       (await readConversation(repo, first.conversationId)).turns,
     ).toHaveLength(3);
   });
-  it("uses scoped hybrid retrieval in persisted chat and rejects foreign vector sources", async () => {
+  it("passes the full current corpus to chat and excludes foreign tender and owner sources", async () => {
     const id = "CO1.REQ.990001";
     const dossier = await repo.createOrGetDossier(id);
     await repo.save(
@@ -739,8 +737,7 @@ describe("persisted dossier, assessment and chat workflow", () => {
             insufficientEvidence: false,
             citations: [
               {
-                documentVersionId: source.documentVersionId,
-                page: source.page,
+                sourceRef: `E${input.evidence.indexOf(source) + 1}`,
                 excerpt: source.text,
               },
             ],
@@ -788,16 +785,16 @@ describe("persisted dossier, assessment and chat workflow", () => {
     expect(JSON.stringify(context.context.reportOverview)).not.toContain(
       "Obsolete report",
     );
-    expect(context.context.retrieval.mode).toBe("hybrid");
+    expect(context.context.retrieval.mode).toBe("full_corpus");
     expect(context.evidence.map((c: any) => c.text).join(" ")).toContain(
       "títulos universitarios",
     );
     expect(context.evidence.map((c: any) => c.text).join(" ")).not.toMatch(
       /aviación|Confidential/,
     );
-    expect(result.retrieval.mode).toBe("hybrid");
+    expect(result.retrieval.mode).toBe("full_corpus");
     const stored = await readConversation(repo, result.conversationId);
-    expect((stored.turns[0].value as any).retrieval.mode).toBe("hybrid");
+    expect((stored.turns[0].value as any).retrieval.mode).toBe("full_corpus");
     expect(result.citations[0].documentVersionId).toBe("rag-current");
   });
   it("separates pending analysis from source freshness for new and historical answers", async () => {
@@ -1102,5 +1099,7 @@ describe("persisted dossier, assessment and chat workflow", () => {
         provider,
       ),
     ).rejects.toMatchObject({ code: "CHECKLIST_OUTPUT_LIMIT", status: 413 });
-  }, 20000);
+  // This integration fixture persists 213 records and exercises several replay paths.
+  // Its timeout is an I/O allowance, not a performance assertion.
+  }, 60000);
 });

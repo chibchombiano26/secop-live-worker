@@ -117,3 +117,32 @@ an incorrect flag, without rewriting their original audit records. A pending
 joint report does not make an answer based on current source documents stale.
 The separate `analysisPending` flag describes whether joint synthesis is still
 needed. Partial coverage and manual OCR review remain separate limitations.
+
+## Complete-corpus conversation answers
+
+The native conversation no longer uses top-k search as its answer context.
+Every current owner-scoped tender chunk and nonexpired selected-company chunk
+is supplied, including sources outside the top ten vector/lexical hits. Vectorize
+remains an index for focused search, not proof of a complete dossier review.
+
+Citation schemas use short per-request references instead of embedding repeated
+copies of source text in schema enums. The server resolves each reference to its
+original document/page and validates its exact continuous quotation. It does not
+accept invented source IDs or quotations. Historical answer excerpts are excluded
+from factual context because an earlier retrieval error must not become evidence.
+
+The 48,000-character input bound remains below the deployed model's configured
+50,000-character limit. Large corpora are read in complete bounded blocks, at most
+two concurrently, followed by synthesis from validated original quotations and
+block findings. No source is silently dropped to meet a context bound. A source,
+resulting synthesis or corpus exceeding operational limits fails explicitly;
+there is no truncated-success fallback. Each request records full-corpus source
+counts. This means all extracted text was supplied for review, not that OCR is
+verified or that the LLM guarantees every legal interpretation. Explicit exhaustive
+checklists still use the complete validated saved requirement ledger.
+
+The native provider reads all pages of its selected conversation for transcript
+copying, guarded at 1,000 turns and the existing 900 KB serialized response bound.
+A changed revision or oversized history fails explicitly rather than exporting an
+incomplete transcript. Other tenders, companies, owners and conversations are
+never joined to fill context or history.

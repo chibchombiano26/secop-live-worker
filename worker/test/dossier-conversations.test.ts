@@ -3,6 +3,7 @@ import {
   retrieveEvidence,
   validateAnswer,
   generateGroundedAnswer,
+  generateDossierAnswer,
 } from "../src/dossier/conversations";
 import { isExhaustiveChecklistRequest } from "../src/dossier/checklist";
 const chunks: any[] = [
@@ -94,6 +95,49 @@ describe("grounded tender conversation", () => {
     expect(sent.evidence.length).toBeGreaterThan(0);
   });
 
+  it("passes every current source without duplicating excerpts in the citation schema", async () => {
+    let sent: any;
+    const evidence = Array.from({ length: 37 }, (_, i) => ({
+      documentVersionId: `document-${i}`, page: i + 1, index: i,
+      text: `Requirement ${i}: ` + "original evidence ".repeat(35),
+    }));
+    await generateDossierAnswer({ id: "test", generate: async (input) => {
+      sent = input;
+      return { answer: "Review pending", insufficientEvidence: true, citations: [] };
+    } }, { purpose: "tender_conversation", evidence, instructions: "Use all sources" });
+    expect(sent.evidence).toHaveLength(37);
+    expect(JSON.stringify(sent).length).toBeLessThanOrEqual(48000);
+    expect(sent.context.retrievalCoverage).toMatchObject({ selectedSources: 37, omittedSources: 0 });
+    expect(JSON.stringify(sent.outputSchema)).not.toContain("original evidence");
+  });
+  it("reads all large-corpus blocks and grounds synthesis only in verified original excerpts", async () => {
+    const evidence = Array.from({ length: 8 }, (_, i) => ({
+      documentVersionId: `doc-${i}`, page: 1, index: i,
+      text: `Unique obligation ${i}. ` + "source material ".repeat(1200),
+    }));
+    const visited = new Set<string>(); let synthesis: any;
+    const result = await generateDossierAnswer({ id: "test", generate: async (input) => {
+      for (const c of input.evidence) visited.add(c.documentVersionId);
+      if (input.purpose === "tender_conversation") synthesis = input;
+      return { answer: input.evidence.map(c => c.text.split(". ")[0]).join("; "), insufficientEvidence: false,
+        citations: input.evidence.map((c, i) => ({ sourceRef: `E${i + 1}`, excerpt: c.text.split(". ")[0] })) };
+    } }, { purpose: "tender_conversation", evidence, instructions: "Use all sources" });
+    expect(visited.size).toBe(8);
+    expect(synthesis.context.corpusCoverage).toMatchObject({ sourceChunksTotal: 8, sourceChunksReviewed: 8 });
+    expect(result.citations.map(c => c.documentVersionId)).toEqual(evidence.map(c => c.documentVersionId));
+    expect(synthesis.evidence.every((c: any) => c.text.startsWith("Unique obligation"))).toBe(true);
+  });
+
+  it("repairs malformed reference output and rejects foreign source references", async () => {
+    let calls = 0;
+    const result = await generateDossierAnswer({id: "test", generate: async () => ({
+      answer: "Tres contratos", insufficientEvidence: false,
+      citations: ++calls === 1 ? [{documentVersionId: "pliego", excerpt: "tres contratos"}] : [{sourceRef: "E1", excerpt: "tres contratos"}],
+    })}, {purpose: "test", evidence: chunks, instructions: "Answer"});
+    expect(calls).toBe(2);
+    expect(result.citations[0].documentVersionId).toBe("pliego");
+    await expect(generateDossierAnswer({id: "test", generate: async () => ({answer: "Foreign", insufficientEvidence: false, citations: [{sourceRef: "E999", excerpt: "foreign text"}]})}, {purpose: "test", evidence: chunks, instructions: "Answer"})).rejects.toMatchObject({code: "INVALID_CITATION"});
+  });
   it("repairs a discontiguous quotation before storing an answer", async () => {
     let calls = 0;
     const model = {
