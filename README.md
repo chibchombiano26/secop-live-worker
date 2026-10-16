@@ -133,6 +133,12 @@ limit each processing attempt to 64 model calls and 10 minutes, each owner to
 only through server configuration (`MODEL_MAX_CALLS`, `MODEL_DAILY_LIMIT`).
 Budget exhaustion is visible; stored extraction/review checkpoints are reusable.
 
+Native assistant citations expose `canOpen` only for original PDFs still stored
+for that owner and tender. The `open-source` assistant request creates a
+single-purpose, 10-minute read ticket for the exact cited file; its private URL
+serves the PDF inline with no-store and browser content-sniffing protections.
+The ticket does not fetch public URLs or change dossier records.
+
 Originals are retained until explicitly removed unless
 `ORIGINAL_RETENTION_DAYS` is configured (1–3650). That option expires originals
 only, preserving extracted evidence, reports and audit history. The explicit

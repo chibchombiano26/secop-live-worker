@@ -1,8 +1,9 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { readFileSync } from "node:fs";
 import { DossierRepository } from "../src/dossier/repository";
-import { executePrivateOperation } from "../src/dossier/api";
+import { executePrivateOperation, privateApiRequest } from "../src/dossier/api";
+import { readSourceTicket } from "../src/dossier/sources";
 let mf: Miniflare, env: any, repo: DossierRepository;
 const context: any = {
   ownerId: "native-chat-test",
@@ -107,12 +108,168 @@ describe("native assistant private provider", () => {
       label: "Estudios previos · pág. 3",
       excerpt: "mínimo dos (2) certificaciones",
     });
+    expect(r.messages[1].citations[0]).not.toHaveProperty("canOpen");
     expect(r.coverage.complete).toBe(false);
     expect(r.coverage.label).toContain("1 extracción");
     expect(r.messages[1].text).toContain(
       "1 extracción requiere revisión contra el original",
     );
     expect(r.messages[1].insufficientEvidence).toBe(true);
+  });
+  it("marks only stored dossier PDFs as openable and returns a page-specific source ticket", async () => {
+    const pdf = new TextEncoder().encode("%PDF-1.7\noriginal tender");
+    await repo.putFile("doc", pdf, "application/pdf");
+    const doc = await repo.read<any>("document", "doc");
+    await repo.save("document", "doc", { ...doc.value, fileId: "doc" }, doc.revision);
+    const loaded = await call({
+      context: { dossierId: "CO1.REQ.1" },
+      request: { method: "load" },
+    });
+    expect(loaded.messages[1].citations[0].canOpen).toBe(true);
+    const opened = await call({
+      context: { dossierId: "CO1.REQ.1" },
+      request: {
+        method: "open-source",
+        messageId: "turn",
+        citationId: "S001",
+      },
+    });
+    expect(opened.source.url).toMatch(/^https:\/\/test\.invalid\/private\/source\//);
+    expect(opened.source.url).toMatch(/#page=3$/);
+    const response = await privateApiRequest(
+      new Request(opened.source.url),
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/pdf");
+    expect(response.headers.get("content-disposition")).toMatch(/inline/);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(pdf);
+    const token = new URL(opened.source.url).pathname.split("/").at(-1)!;
+    await expect(readSourceTicket(env, `${token.slice(0, -1)}x`)).rejects.toMatchObject({
+      code: "SOURCE_TICKET_INVALID",
+    });
+    await expect(readSourceTicket(env, token, Number.MAX_SAFE_INTEGER)).rejects.toMatchObject({
+      code: "SOURCE_TICKET_INVALID",
+    });
+  });
+  it("rejects unknown citations and prevents ticket use by another owner", async () => {
+    const pdf = new TextEncoder().encode("%PDF-1.7\noriginal tender");
+    await repo.putFile("doc", pdf, "application/pdf");
+    const doc = await repo.read<any>("document", "doc");
+    await repo.save("document", "doc", { ...doc.value, fileId: "doc" }, doc.revision);
+    await expect(
+      call({
+        context: { dossierId: "CO1.REQ.1" },
+        request: { method: "open-source", messageId: "turn", citationId: "S002" },
+      }),
+    ).rejects.toMatchObject({ status: 404 });
+    const opened = await call({
+      context: { dossierId: "CO1.REQ.1" },
+      request: { method: "open-source", messageId: "turn", citationId: "S001" },
+    });
+    const otherRepo = new DossierRepository(env, { ...context, ownerId: "source-test-owner" });
+    await otherRepo.save("dossier", "CO1.REQ.1", { corpusRevision: 6 }, 0);
+    await otherRepo.save("document", "doc", { ...doc.value, fileId: "doc" }, 0);
+    await otherRepo.save("conversation", "conversation", {
+      dossierId: "CO1.REQ.1", title: "Test", turnIds: ["turn"],
+    }, 0);
+    await otherRepo.save("message", "turn", {
+      userMessage: "Requisitos", answer: "Mínimo dos certificaciones.",
+      citations: [{ documentVersionId: "doc", page: 3, excerpt: "mínimo dos (2) certificaciones" }],
+    }, 0);
+    await expect(
+      executePrivateOperation(env, { ...context, ownerId: "source-test-owner" }, "assistant" as any, {
+        context: { dossierId: "CO1.REQ.1" },
+        request: { method: "open-source", messageId: "turn", citationId: "S001" },
+      }, "https://test.invalid"),
+    ).rejects.toMatchObject({ code: "SOURCE_NOT_AVAILABLE" });
+    await otherRepo.save("dossier", "CO1.REQ.2", { corpusRevision: 1 }, 0);
+    await expect(call({
+      context: { dossierId: "CO1.REQ.2" },
+      request: { method: "open-source", messageId: "turn", citationId: "S001" },
+    })).rejects.toMatchObject({ status: 404 });
+  });
+  it("maps checklist requirements to bounded source-linked task suggestions", async () => {
+    await repo.save("conversation", "checklist-conversation", {
+      dossierId: "CO1.REQ.1", title: "Checklist", turnIds: ["checklist-turn"],
+    }, 0);
+    await repo.save("message", "checklist-turn", {
+      userMessage: "Todos los requisitos",
+      answer: "",
+      citations: [],
+      checklist: {
+        dossierId: "CO1.REQ.1",
+        corpusRevision: 6,
+        coverage: {
+          requirements: 1, citedRequirements: 1, inventoryComplete: true,
+          listedDocuments: 1, reviewRequiredDocuments: 0, unavailableDocuments: 0,
+        },
+        items: [
+          {
+            requirementId: "req-1", reference: "R001", wording: "A".repeat(250), category: "documents",
+            citations: [{ sourceRef: "S001" }],
+          },
+          {
+            requirementId: "req-2", reference: "R002", wording: "Presentar garantía", category: "guarantees",
+            citations: [{ sourceRef: "S002" }],
+          },
+        ],
+        sources: [
+          { reference: "S001", documentVersionId: "doc", page: 3, excerpt: "evidence one" },
+          { reference: "S002", documentVersionId: "doc", page: 4, excerpt: "evidence two" },
+        ],
+        evidenceGaps: [],
+        companyEvidence: { profileAttached: false, documents: [], note: "" },
+        cautions: [],
+      },
+      corpusRevision: 6,
+    }, 0);
+    const result = await call({
+      context: { dossierId: "CO1.REQ.1" },
+      request: { method: "load" },
+    });
+    const suggestions = result.messages.find((message: any) => message.id === "checklist-turn").taskSuggestions;
+    expect(suggestions).toHaveLength(2);
+    expect(suggestions[0].id).toBe("req-1");
+    expect(suggestions[0].title).toHaveLength(200);
+    expect(suggestions[0].description).toContain("R001");
+    expect(suggestions[0].citationIds).toEqual(["S001"]);
+    expect(suggestions[1].id).toBe("req-2");
+    expect(suggestions[1].citationIds).toEqual(["S002"]);
+  });
+  it("checks stored PDF metadata once per distinct source across transcript history", async () => {
+    const cacheRepo = new DossierRepository(env, {
+      ownerId: "source-cache-owner",
+      scopes: ["dossier:read"],
+    });
+    const pdf = new TextEncoder().encode("%PDF-1.7\nsource");
+    await cacheRepo.save("dossier", "CO1.REQ.9", { corpusRevision: 1 }, 0);
+    await cacheRepo.putFile("cached-doc", pdf, "application/pdf");
+    await cacheRepo.save("document", "cached-doc", {
+      name: "Source", dossierId: "CO1.REQ.9", fileId: "cached-doc", state: "ready",
+    }, 0);
+    const turnIds = Array.from({ length: 20 }, (_, index) => `cached-turn-${index}`);
+    for (const turnId of turnIds)
+      await cacheRepo.save("message", turnId, {
+        userMessage: "Question", answer: "Answer",
+        citations: [{ documentVersionId: "cached-doc", page: 1, excerpt: "evidence" }],
+      }, 0);
+    await cacheRepo.save("conversation", "source-cache-conversation", {
+      dossierId: "CO1.REQ.9", title: "Cache test", turnIds,
+    }, 0);
+    const head = vi.spyOn(DossierRepository.prototype, "headFile");
+    const result: any = await executePrivateOperation(env, {
+      ownerId: "source-cache-owner", scopes: ["dossier:read"],
+    }, "assistant" as any, {
+      context: { dossierId: "CO1.REQ.9" }, request: { method: "load" },
+    }, "https://test.invalid");
+    expect(result.messages).toHaveLength(40);
+    expect(result.messages[1].citations[0].canOpen).toBe(true);
+    expect(head).toHaveBeenCalledTimes(1);
+    head.mockRestore();
   });
   it("returns all pages of the selected conversation for complete transcript copying", async () => {
     const turnIds = Array.from({ length: 23 }, (_, i) => `history-${i}`);

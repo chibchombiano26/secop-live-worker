@@ -17,7 +17,8 @@ export type EntityKind =
   | "task"
   | "conversation"
   | "message"
-  | "upload";
+  | "upload"
+  | "source";
 export type Stored<T> = {
   id: string;
   revision: number;
@@ -269,6 +270,9 @@ export class DossierRepository {
   }
   getFile(id: string) {
     return this.bucket.get(this.fileKey(id));
+  }
+  headFile(id: string) {
+    return this.bucket.head(this.fileKey(id));
   }
   async deleteFile(id: string) {
     await this.bucket.delete(this.fileKey(id));

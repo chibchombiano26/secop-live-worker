@@ -19,6 +19,7 @@ import {
 import { readAssessment, reviewFinding, findingSchema } from "./assessment";
 import { readConversation, type ChatInput } from "./conversations";
 import { createUploadTicket, acceptUploadTicket, uploadPage } from "./uploads";
+import { readSourceTicket } from "./sources";
 import { boundedBytes } from "./downloads";
 import type { DocumentVersion } from "./inventory";
 import type { EvidenceChunk } from "./extraction";
@@ -284,6 +285,7 @@ export async function executePrivateOperation(
         assistantProviderSchema.parse(input),
         (args): Promise<unknown> =>
           executePrivateOperation(env, context, "chat", args, origin),
+        origin,
       );
     case "prepare": {
       const a = routes.prepare.schema.parse(input);
@@ -767,6 +769,12 @@ export async function privateApiRequest(
       return Response.json(privateOpenApi(), { headers });
     if (url.pathname === "/private/upload" && request.method === "GET")
       return uploadPage();
+    if (url.pathname.startsWith("/private/source/")) {
+      if (request.method !== "GET")
+        throw new DossierError("METHOD_NOT_ALLOWED", 405);
+      const token = url.pathname.slice("/private/source/".length);
+      return await readSourceTicket(env, token);
+    }
     if (url.pathname === "/private/upload" && request.method === "POST") {
       const token = request.headers.get("X-Upload-Ticket") ?? "";
       const filename = decodeURIComponent(

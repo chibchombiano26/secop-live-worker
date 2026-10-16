@@ -4,6 +4,7 @@ import { z } from "zod/v4";
 import { DossierError } from "./contracts";
 import { DossierRepository } from "./repository";
 import { readConversation, type Conversation } from "./conversations";
+import { createSourceTicket, hasStoredPdf } from "./sources";
 const id = z.string().min(1).max(200);
 export const assistantProviderSchema = z
   .object({
@@ -16,6 +17,13 @@ export const assistantProviderSchema = z
     request: z.discriminatedUnion("method", [
       z.object({ method: z.literal("load") }).strict(),
       z.object({ method: z.literal("poll"), jobId: id }).strict(),
+      z
+        .object({
+          method: z.literal("open-source"),
+          messageId: id,
+          citationId: z.string().regex(/^S\d{3,}$/),
+        })
+        .strict(),
       z
         .object({
           method: z.literal("send"),
@@ -34,6 +42,7 @@ export async function runAssistantProvider(
   repo: DossierRepository,
   input: ProviderInput,
   queueChat: QueueChat,
+  origin = "",
 ) {
   const { context, request } = input;
   const dossier = await repo.readDossier(context.dossierId);
@@ -48,6 +57,13 @@ export async function runAssistantProvider(
   }
   let pendingJobId: string | undefined;
   let preferredConversationId: string | undefined;
+  let selectedSource:
+    | { documentId: string; dossierId: string; page?: number }
+    | undefined;
+  const documents = new Map<
+    string,
+    { name: string; canOpen: boolean }
+  >();
   async function correlate(source: {
     conversationId?: string;
     idempotencyKey?: string;
@@ -60,7 +76,57 @@ export async function runAssistantProvider(
           )
         : undefined);
   }
-  if (request.method === "send") {
+  if (request.method === "open-source") {
+    const conversationMatches = await repo.db
+      .prepare(
+        "SELECT c.id,c.value FROM dossier_records c JOIN json_each(c.value,'$.turnIds') t WHERE c.owner_id=? AND c.kind='conversation' AND json_extract(c.value,'$.dossierId')=? AND COALESCE(json_extract(c.value,'$.companyProfileId'),'')=? AND t.value=? LIMIT 2",
+      )
+      .bind(
+        repo.context.ownerId,
+        context.dossierId,
+        context.companyProfileId ?? "",
+        request.messageId,
+      )
+      .all<{ id: string; value: string }>();
+    const found = conversationMatches.results[0];
+    if (!found || conversationMatches.results.length !== 1)
+      throw new DossierError("SOURCE_CITATION_NOT_FOUND", 404);
+    const conversationValue = JSON.parse(found.value) as Conversation;
+    if (!matches(conversationValue))
+      throw new DossierError("CONVERSATION_CONTEXT_MISMATCH", 403);
+    preferredConversationId = found.id;
+    const turn = await repo.read<Record<string, any>>("message", request.messageId);
+    const sources = turn.value.checklist?.sources ?? turn.value.citations ?? [];
+    const index = Number(request.citationId.slice(1)) - 1;
+    const citation = sources[index];
+    if (!citation || request.citationId !== `S${String(index + 1).padStart(3, "0")}`)
+      throw new DossierError("SOURCE_CITATION_NOT_FOUND", 404);
+    const document = await repo.read<Record<string, any>>(
+      "document",
+      citation.documentVersionId,
+    );
+    if (
+      document.value.dossierId !== context.dossierId ||
+      (turn.value.checklist && turn.value.checklist.dossierId !== context.dossierId)
+    )
+      throw new DossierError("SOURCE_CITATION_NOT_FOUND", 404);
+    const canOpen = await hasStoredPdf(repo, document.value, context.dossierId);
+    if (!canOpen)
+      throw new DossierError("SOURCE_NOT_AVAILABLE", 404);
+    documents.set(citation.documentVersionId, {
+      name: typeof document.value.name === "string"
+        ? document.value.name
+        : "Fuente del expediente",
+      canOpen,
+    });
+    selectedSource = {
+      documentId: citation.documentVersionId,
+      dossierId: context.dossierId,
+      ...(Number.isSafeInteger(citation.page) && citation.page > 0
+        ? { page: citation.page }
+        : {}),
+    };
+  } else if (request.method === "send") {
     await correlate(request);
     if (request.conversationId) {
       const c = await repo.read<Conversation>(
@@ -156,8 +222,10 @@ export async function runAssistantProvider(
         throw error;
     }
   }
-  const documents = new Map<string, string>();
   const messages: Array<Record<string, unknown>> = [];
+  const latestChecklistTurnId = [...(conversation?.turns ?? [])]
+    .reverse()
+    .find((turn) => turn.value.checklist)?.id;
   for (const turn of conversation?.turns ?? []) {
     const citations = [];
     const sourceCitations =
@@ -166,22 +234,37 @@ export async function runAssistantProvider(
         excerpt: source.excerpt,
       })) ?? turn.value.citations;
     for (const [index, citation] of sourceCitations.entries()) {
-      if (!documents.has(citation.documentVersionId)) {
-        const doc = await repo.read<{ name?: string }>(
+      let document = documents.get(citation.documentVersionId);
+      if (!document) {
+        const doc = await repo.read<Record<string, unknown>>(
           "document",
           citation.documentVersionId,
         );
+        document = {
+          name:
+            typeof doc.value.name === "string"
+              ? doc.value.name
+              : "Fuente del expediente",
+          canOpen: await hasStoredPdf(repo, doc.value, context.dossierId),
+        };
         documents.set(
           citation.documentVersionId,
-          doc.value.name ?? "Fuente del expediente",
+          document,
         );
       }
       citations.push({
         id: `S${String(index + 1).padStart(3, "0")}`,
-        label: `${documents.get(citation.documentVersionId)}${citation.page ? ` · pág. ${citation.page}` : citation.section ? ` · ${citation.section}` : ""}`,
+        label: `${document.name}${citation.page ? ` · pág. ${citation.page}` : citation.section ? ` · ${citation.section}` : ""}`,
         excerpt: citation.excerpt,
+        ...(document.canOpen ? { canOpen: true } : {}),
       });
     }
+    if (
+      turn.value.checklist &&
+      turn.id === latestChecklistTurnId &&
+      turn.value.checklist.items.length > 1000
+    )
+      throw new DossierError("TASK_SUGGESTIONS_TOO_LARGE", 413);
     messages.push({
       id: `${turn.id}:user`,
       role: "user",
@@ -199,6 +282,31 @@ export async function runAssistantProvider(
       stale: turn.value.stale,
       insufficientEvidence:
         !turn.value.checklist && turn.value.insufficientEvidence,
+      ...(turn.value.checklist && turn.id === latestChecklistTurnId
+        ? {
+            taskSuggestions: turn.value.checklist.items
+              .map((item) => {
+                const suffix = `\nReferencia: ${item.reference}. Categoría: ${item.category}.`;
+                if (item.wording.length + suffix.length > 20_000)
+                  throw new DossierError("TASK_SUGGESTION_TOO_LARGE", 413);
+                return {
+                  id: item.requirementId || item.reference,
+                  title: item.wording.slice(0, 200),
+                  description: `${item.wording}${suffix}`,
+                  citationIds: item.citations
+                    .map((citation) => {
+                      const sourceIndex = turn.value.checklist!.sources.findIndex(
+                        (source) => source.reference === citation.sourceRef,
+                      );
+                      return sourceIndex < 0
+                        ? null
+                        : `S${String(sourceIndex + 1).padStart(3, "0")}`;
+                    })
+                    .filter((citationId): citationId is string => citationId !== null),
+                };
+              }),
+          }
+        : {}),
     });
   }
   let coverage:
@@ -247,6 +355,18 @@ export async function runAssistantProvider(
       complete: analysisComplete && pending === 0 && review === 0,
       label: `${context.dossierId} · ${selectedCompany?.value.name ?? "Solo la licitación"} · ${analysisComplete ? "Análisis conjunto completado" : "Análisis conjunto pendiente"} · ${coverage?.indexed ?? 0}/${coverage?.total ?? 0} documentos · ${pending} pendientes · ${review} ${review === 1 ? "extracción" : "extracciones"} por revisar`,
     },
+    ...(selectedSource
+      ? {
+          source: await (async () => {
+            const ticket = await createSourceTicket(repo, selectedSource!);
+            const pageHash = ticket.page ? `#page=${ticket.page}` : "";
+            return {
+              url: `${origin}/private/source/${encodeURIComponent(ticket.token)}${pageHash}`,
+              ...(ticket.page ? { page: ticket.page } : {}),
+            };
+          })(),
+        }
+      : {}),
   };
   if (new TextEncoder().encode(JSON.stringify(result)).length > 900_000)
     throw new DossierError("ASSISTANT_HISTORY_TOO_LARGE", 413);
