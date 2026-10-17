@@ -12,13 +12,15 @@ lease and selected-company ID; every tool checks the saved request against these
 values under the owner's D1 partition. A model cannot supply source, dossier,
 owner or company selectors. There are no shell, sandbox or external MCP tools.
 
-`inspect_current_dossier` reads processing coverage. `study_current_request` calls
-the existing grounded-answer processor, including full-corpus review, exhaustive
-saved requirements, company evidence and citation validation. A bounded success or failure tool
-result terminates the agent turn. Processing failure codes return through D1 to
-the Workflow so budget continuations still yield without consuming retry attempts.
-Markers are cleared under the active lease on new attempts and durable-tool replay. Savia displays the authoritative saved answer,
-not a free-form agent acknowledgement. Duplicate study calls reuse the saved
+`inspect_current_dossier` reads processing coverage. A deterministic `useAgentStart`
+intake calls the existing grounded-answer processor, including full-corpus review,
+exhaustive saved requirements, company evidence and citation validation. A cheap
+coordinator model cannot skip that required processing or choose its scope. The
+Workflow displays the authoritative saved answer and ignores acknowledgement
+failure after a verified answer is persisted. Processing failure codes return
+through D1 so budget continuations yield without consuming retry attempts.
+Markers are cleared under the active lease on new attempts and intake replay.
+Duplicate study calls reuse the saved
 answer. Tracing is disabled for this integration. Models use OpenRouter with the encrypted
 `OPENROUTER_API_KEY` Worker secret. Grounded analysis routes by price, disallows
 provider data collection and uses low reasoning effort; the initial inexpensive
@@ -46,7 +48,8 @@ inlines the existing PDF assets, then consolidates Worker modules for the existi
 safe multipart uploader. The original OAuth/HTTP, queue and cron handlers remain.
 `nodejs_compat` is required. Flue's generated SQLite class is permanently named
 `FlueTenderStudyAgent`; migration `secop-flue-v1` is append-only. Never rename the
-agent or replay a namespace-creation migration. Pin its assigned namespace ID in
+agent or replay a namespace-creation migration. Code updates use a bounded deferred rollout (30 seconds) so long-running agents
+do not silently retain previous code indefinitely. Pin its assigned namespace ID in
 `infra/production.json` after initial deployment.
 
 Unified deployment preserves all existing resource identities and secrets, adds

@@ -183,6 +183,10 @@ export function workerMetadata(m, settings) {
     compatibility_flags: m.compatibilityFlags,
   };
   if (m.agent) {
+    const delay = m.agent.codeUpdateMaxDelaySeconds ?? 30;
+    if (!Number.isInteger(delay) || delay < 1 || delay > 300)
+      throw new Error("Invalid agent code update delay");
+    metadata.code_update_strategy = { mode: "deferred", max_delay: delay };
     if (
       settings.migration_tag &&
       settings.migration_tag !== m.agent.migrationTag

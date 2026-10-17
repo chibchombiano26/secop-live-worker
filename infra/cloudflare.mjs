@@ -113,6 +113,10 @@ export async function inspect(
     api.call(`/r2/buckets/${m.bucket.name}/domains/managed`),
     api.call(`/r2/buckets/${m.bucket.name}/domains/custom`),
   ]);
+  const service = await api.call(`/workers/services/${m.worker}`);
+  settings.migration_tag = service.default_environment?.script?.migration_tag;
+  if (m.agent?.namespaceId && settings.migration_tag !== m.agent.migrationTag)
+    throw new Error("Agent migration tag mismatch");
   assertPrivateBucket(bucketManagedDomain, bucketCustomDomains);
   assertBindings(m, settings.bindings, { verifyValues, allowAgentBootstrap });
   if (

@@ -93,7 +93,8 @@
     "binding": "FLUE_TENDER_STUDY_AGENT",
     "className": "FlueTenderStudyAgent",
     "migrationTag": "secop-flue-v1",
-    "namespaceId": "d19c923f0ba349ebadca2d0ff8a9b477"
+    "namespaceId": "d19c923f0ba349ebadca2d0ff8a9b477",
+    "codeUpdateMaxDelaySeconds": 30
   },
   "workflow": {
     "binding": "DOSSIER_WORKFLOW",

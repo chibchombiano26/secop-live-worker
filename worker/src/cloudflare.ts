@@ -91,7 +91,17 @@ export class SecopDossierWorkflow extends WorkflowEntrypoint<
           retries: { limit: 1, delay: "2 seconds", backoff: "constant" },
         },
         async () => {
-          await agent.read(receipt);
+          try {
+            await agent.read(receipt);
+          } catch (error) {
+            const current = await r.readJob(j.id);
+            if (
+              current.progress.stage !== "answered" &&
+              !current.progress.agentFailure
+            )
+              throw error;
+            assertStudyCompleted(current);
+          }
           return { settled: true };
         },
       );

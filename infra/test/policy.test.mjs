@@ -324,3 +324,10 @@ test("agent uploads resolve the owned class rather than forwarding a read-only n
   assert.equal(binding.namespace_id, undefined);
   assert.equal(binding.class_name, manifest.agent.className);
 });
+
+test("agent code updates have a bounded deferred rollout", () => {
+  assert.deepEqual(workerMetadata(manifest, {}).code_update_strategy, {
+    mode: "deferred",
+    max_delay: 30,
+  });
+});
