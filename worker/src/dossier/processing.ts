@@ -26,6 +26,7 @@ import type { RetrievalEnv } from "./retrieval";
 export type ProcessingEnv = PrivateServiceEnv &
   ModelEnv &
   RetrievalEnv & {
+    AGENT_MODEL_NAME?: string;
     SECOP_OCR?: OcrServiceBinding;
     EXTRACTOR_URL?: string;
     EXTRACTOR_KEY?: string;

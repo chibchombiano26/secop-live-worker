@@ -79,8 +79,9 @@
     "MODEL_DAILY_LIMIT": "1000",
     "MODEL_MAX_CALLS": "64",
     "MODEL_MAX_INPUT_CHARS": "50000",
-    "MODEL_NAME": "openai/gpt-oss-20b",
-    "MODEL_URL": "https://openrouter.ai/api/v1/chat/completions"
+    "MODEL_NAME": "openai/gpt-oss-120b",
+    "MODEL_URL": "https://openrouter.ai/api/v1/chat/completions",
+    "AGENT_MODEL_NAME": "openai/gpt-oss-20b"
   },
   "requiredSecrets": [
     "API_KEYS",
