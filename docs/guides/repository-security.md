@@ -59,3 +59,24 @@ erasure: GitHub can retain closed-PR refs/cached commits and others may have
 clones. GitHub Support handles qualifying sensitive-data removal requests; no
 credentials were detected in the audited history. Never claim that a root reset
 purges every previous copy.
+
+## Security remediation review (2026-10-17)
+
+- Vitest 5.0.5 removes vulnerable `tinypool` and includes the patched mocker.
+  This resolves CVE-2026-104848, CVE-2026-104849 and CVE-2026-84373.
+- fflate 0.8.3 resolves CVE-2026-45820 in ZIP64 parsing. The editable proposal
+  generation/download tests cover the updated ZIP writer and reader.
+- esbuild is aligned with Vite 8's optional peer range so a clean npm installation
+  resolves without force flags or ignored peer-dependency conflicts.
+- CodeQL's two XML double-decoding findings were in DOCX tests. Extraction now
+  decodes entities in one pass and a regression assertion preserves literal
+  `&lt;...&gt;` source text. No production XML parser was affected.
+- The Gitleaks installer filesystem-flow alert is a reviewed false positive:
+  the release URL/output path are fixed, downloaded bytes must match a checked-in
+  platform-specific SHA-256 before the archive is written or extracted, and
+  a mismatch aborts installation. The validation remains in place; it was not
+  removed to silence the scanner.
+
+Dependency updates are combined only after reviewing their individual diffs and
+CI results. The combined branch must pass tests, types, bundle, dependency review,
+Gitleaks and CodeQL before it is merged. Production secrets/data are unchanged.

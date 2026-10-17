@@ -7,13 +7,23 @@ import { executePrivateOperation, privateApiRequest } from "../src/dossier/api";
 import { createProposalDocument } from "../src/dossier/proposal";
 import { sweepExpiredProposals } from "../src/dossier/retention";
 
+// Decode each entity once: literal entity text must survive the test extraction.
+function decodeXmlText(text: string): string {
+  const entities: Record<string, string> = {
+    "&amp;": "&",
+    "&lt;": "<",
+    "&gt;": ">",
+  };
+  return text.replace(/&(?:amp|lt|gt);/gu, (entity) => entities[entity]);
+}
+
 let mf: Miniflare;
 let env: any;
 let repo: DossierRepository;
 const context: any = { ownerId: "proposal-owner", scopes: ["dossier:read"] };
 const dossierId = "CO1.REQ.987654321";
 const sourceText =
-  "El proponente deberá acreditar experiencia mínima en servicios de soporte & operación <según pliego>. Campo OCR\u0001 revisable.";
+  "El proponente deberá acreditar experiencia mínima en servicios de soporte & operación <según pliego>. Campo OCR\u0001 revisable. Literal &lt;texto&gt;.";
 
 beforeAll(async () => {
   mf = new Miniflare(
@@ -232,11 +242,7 @@ describe("SECOP proposal DOCX", () => {
     expect(xml).not.toContain("<w:keepLines/>");
     const paragraphTexts = [...xml.matchAll(/<w:p>[\s\S]*?<\/w:p>/gu)].map(
       ([paragraph]) =>
-        paragraph
-          .replace(/<[^>]+>/gu, " ")
-          .replaceAll("&amp;", "&")
-          .replaceAll("&lt;", "<")
-          .replaceAll("&gt;", ">")
+        decodeXmlText(paragraph.replace(/<[^>]+>/gu, " "))
           .replace(/\s+/gu, " ")
           .trim(),
     );
@@ -250,11 +256,8 @@ describe("SECOP proposal DOCX", () => {
     expect(styles).toContain('w:styleId="Requirement"');
     expect(styles).toContain('w:styleId="SourceTitle"');
     expect(styles).toContain('w:styleId="SourceText"');
-    const text = xml
-      .replace(/<[^>]+>/gu, " ")
-      .replaceAll("&amp;", "&")
-      .replaceAll("&lt;", "<")
-      .replaceAll("&gt;", ">");
+    const text = decodeXmlText(xml.replace(/<[^>]+>/gu, " "));
+    expect(text).toContain("Literal &lt;texto&gt;.");
     expect(text).toContain("Servicios Andinos S.A.S. & Asociados");
     expect(text).toContain("900123456-7");
     expect(text).toContain("R001");
