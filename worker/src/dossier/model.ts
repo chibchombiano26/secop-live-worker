@@ -111,7 +111,7 @@ export class ConfiguredModel implements ModelProvider {
             Authorization: `Bearer ${key}`,
             "Content-Type": "application/json",
           },
-          redirect: "error",
+          redirect: "manual",
           signal: AbortSignal.timeout(90000),
           body: JSON.stringify({
             model: this.id,
