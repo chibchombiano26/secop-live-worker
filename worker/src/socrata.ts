@@ -1,5 +1,7 @@
-export interface Env {
+export interface Env extends Record<string, unknown> {
   API_KEYS?: string;
+  PRIVATE_AUTH_PEPPER?: string;
+  PRIVATE_CONNECTIONS?: string;
   SOCRATA_APP_TOKEN?: string;
   CACHE_TTL?: string;
   SOCRATA_DOMAIN?: string;
@@ -11,6 +13,37 @@ export const DATASETS = {
 } as const;
 
 export const MAX_LIMIT = 100;
+export const MAX_FILTER_VALUES = 20;
+export const MAX_FILTER_VALUE_LENGTH = 500;
+
+export type StringFilter = string | string[];
+
+export function parseRepeatedFilter(values: string[]): StringFilter | undefined {
+  if (!values.length) return undefined;
+  return values.length === 1 ? values[0] : values;
+}
+
+function filterValues(value: StringFilter): string[] {
+  const values = Array.isArray(value) ? value : [value];
+  if (
+    values.length < 1 ||
+    values.length > MAX_FILTER_VALUES ||
+    values.some(
+      (item) =>
+        typeof item !== "string" ||
+        item.trim().length === 0 ||
+        item.length > MAX_FILTER_VALUE_LENGTH,
+    )
+  ) {
+    throw new Error("Invalid filter values");
+  }
+  return values;
+}
+
+function filterAny(values: string[], predicate: (value: string) => string) {
+  if (values.length === 1) return predicate(values[0]);
+  return `(${values.map(predicate).join(" OR ")})`;
+}
 
 export function esc(v: string): string {
   return v.replace(/'/g, "''");
@@ -34,34 +67,78 @@ export function wordsAny(cols: string[], q: string): string {
 }
 
 export interface ProcesoFilters {
-  estado?: string;
-  entidad?: string;
-  modalidad?: string;
-  departamento?: string;
+  estado?: StringFilter;
+  entidad?: StringFilter;
+  modalidad?: StringFilter;
+  departamento?: StringFilter;
   q?: string;
   desde?: string;
   hasta?: string;
+  vigentes?: boolean;
   limit?: number;
   offset?: number;
 }
 
-export function buildProcesosQuery(f: ProcesoFilters): string {
+const TERMINAL_STATES = [
+  "Cancelado",
+  "Adjudicado",
+  "Seleccionado",
+  "Cerrado",
+  "Terminado",
+  "Finalizado",
+  "Liquidado",
+  "Desierto",
+  "Revocado",
+  "Suspendido",
+  "Evaluación",
+  "En evaluación",
+  "Borrador",
+];
+
+/** Socrata stores these as floating local timestamps. Colombia is UTC-5 year-round. */
+export function colombianFloatingTimestamp(now: Date): string {
+  return new Date(now.getTime() - 5 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 19);
+}
+
+export function buildProcesosQuery(f: ProcesoFilters, now = new Date()): string {
   const limit = Math.max(1, Math.min(f.limit ?? 20, MAX_LIMIT));
   const offset = Math.max(0, f.offset ?? 0);
   const w: string[] = [];
-  if (f.estado) w.push(`estado_del_procedimiento = '${esc(f.estado)}'`);
-  if (f.entidad) w.push(like("entidad", f.entidad));
-  if (f.modalidad) w.push(like("modalidad_de_contratacion", f.modalidad));
-  if (f.departamento) w.push(like("departamento_entidad", f.departamento));
+  if (f.estado !== undefined)
+    w.push(
+      filterAny(filterValues(f.estado), (value) => `estado_del_procedimiento = '${esc(value)}'`),
+    );
+  if (f.entidad !== undefined)
+    w.push(filterAny(filterValues(f.entidad), (value) => like("entidad", value)));
+  if (f.modalidad !== undefined)
+    w.push(
+      filterAny(filterValues(f.modalidad), (value) =>
+        like("modalidad_de_contratacion", value),
+      ),
+    );
+  if (f.departamento !== undefined)
+    w.push(
+      filterAny(filterValues(f.departamento), (value) =>
+        like("departamento_entidad", value),
+      ),
+    );
   if (f.desde) w.push(`fecha_de_publicacion_del >= '${esc(f.desde)}'`);
   if (f.hasta) w.push(`fecha_de_publicacion_del <= '${esc(f.hasta)}'`);
+  if (f.vigentes) {
+    w.push(`fecha_de_recepcion_de > '${colombianFloatingTimestamp(now)}'`);
+    w.push(
+      `upper(estado_del_procedimiento) NOT IN (${TERMINAL_STATES.map((state) => `'${state.toUpperCase()}'`).join(", ")})`,
+    );
+  }
   if (f.q)
     w.push(
       wordsAny(["nombre_del_procedimiento", "descripci_n_del_procedimiento"], f.q),
     );
   const where = w.length ? `WHERE ${w.join(" AND ")}` : "";
   return (
-    `SELECT *, :id ${where} ORDER BY fecha_de_publicacion_del DESC, :id` +
+    `SELECT *, :id ${where} ORDER BY ${f.vigentes ? "fecha_de_recepcion_de ASC, :id" : "fecha_de_publicacion_del DESC, :id"}` +
     ` LIMIT ${limit} OFFSET ${offset}`
   );
 }

@@ -1,0 +1,52 @@
+name: Deploy SECOP
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        type: choice
+        description: Verify the production inventory or deploy a compatible release
+        default: plan
+        options: [plan, deploy, check]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: secop-production-infrastructure
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require the existing deployment credential
+        run: test -n "$CLOUDFLARE_API_TOKEN"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.13.1
+          tofu_wrapper: false
+      - run: npm ci --prefix worker
+      - run: npm run test:infra
+      - run: npm --prefix worker run typecheck
+      - run: npm --prefix worker test
+      - run: worker/node_modules/.bin/tsc -p ocr/tsconfig.json
+      - run: python3 -m unittest discover -s ocr/container/tests -p 'test_*.py'
+      - uses: actions/cache@v4
+        with:
+          path: infra/.state/last-release.json
+          key: secop-release-${{ github.run_id }}
+          restore-keys: secop-release-
+      - name: Reconcile and verify the existing production resources
+        env:
+          OPERATION: ${{ inputs.operation }}
+        run: node infra/run.mjs "$OPERATION"

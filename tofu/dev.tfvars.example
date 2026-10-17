@@ -5,6 +5,7 @@ enable_docker     = true
 cloudflare_api_token  = ""
 cloudflare_account_id = ""
 worker_name           = "secop-live-worker"
+dossier_vector_index_name = "" # Optional existing Vectorize index; empty disables its binding
 
 api_keys          = "cambia-esta-clave"
 socrata_app_token = ""

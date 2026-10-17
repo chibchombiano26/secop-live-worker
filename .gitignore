@@ -9,3 +9,8 @@ terraform.tfstate*
 .env
 .wrangler/
 tofu/tfstate*
+infra/.state/
+worker/.wrangler.production.json
+*.tfplan
+*.tfstate
+*.tfstate.backup

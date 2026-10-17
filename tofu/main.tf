@@ -8,13 +8,17 @@ module "worker" {
   source = "./modules/worker"
   count  = var.enable_cloudflare ? 1 : 0
 
-  worker_name       = var.worker_name
-  account_id        = var.cloudflare_account_id
-  bundle_path       = var.worker_bundle_path
-  api_keys          = var.api_keys
-  socrata_app_token = var.socrata_app_token
-  custom_hostname   = var.custom_hostname
-  zone_id           = var.cloudflare_zone_id
+  worker_name               = var.worker_name
+  account_id                = var.cloudflare_account_id
+  bundle_path               = var.worker_bundle_path
+  api_keys                  = var.api_keys
+  socrata_app_token         = var.socrata_app_token
+  ocr_worker_service        = var.ocr_worker_service
+  enable_dossiers           = var.enable_dossiers
+  dossier_secrets           = var.dossier_secrets
+  dossier_vector_index_name = var.dossier_vector_index_name
+  custom_hostname           = var.custom_hostname
+  zone_id                   = var.cloudflare_zone_id
 }
 
 module "docker" {

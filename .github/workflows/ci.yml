@@ -27,6 +27,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.13.1
       - run: tofu -chdir=tofu fmt -check -recursive
       - run: tofu -chdir=tofu init -backend=false -input=false
       - run: tofu -chdir=tofu validate
+      - run: tofu -chdir=tofu/live init -backend=false -input=false
+      - run: tofu -chdir=tofu/live validate
+
+  infrastructure-and-ocr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: npm ci --prefix worker
+      - run: npm run test:infra
+      - run: worker/node_modules/.bin/tsc -p ocr/tsconfig.json
+      - run: python3 -m unittest discover -s ocr/container/tests -p 'test_*.py'
