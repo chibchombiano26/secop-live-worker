@@ -61,3 +61,12 @@ export async function rollbackWorker(m, api, versions) {
     },
   });
 }
+
+/** Only build identity belongs in a CI cache; business counts stay private. */
+export function ocrBuildCache(release) {
+  return {
+    ocrSourceHash: release.ocrSourceHash,
+    ocrVersions: release.ocrVersions,
+    ocrImage: release.ocrImage,
+  };
+}

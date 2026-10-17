@@ -14,3 +14,11 @@ worker/.wrangler.production.json
 *.tfplan
 *.tfstate
 *.tfstate.backup
+
+# Local agent sessions can contain live credentials and recovery material.
+.superpowers/
+*.private.*
+.env.*
+!.env.example
+!.env.sample
+*.tfvars

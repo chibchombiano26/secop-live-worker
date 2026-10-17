@@ -91,3 +91,23 @@ test("recovery refuses an incomplete deployment split", async () => {
     /complete recovery/,
   );
 });
+
+test("public CI cache excludes dossier counts, worker metadata and recovery paths", async () => {
+  const { ocrBuildCache } = await import("../release.mjs");
+  assert.deepEqual(
+    ocrBuildCache({
+      ocrSourceHash: "hash",
+      ocrVersions: [{ version_id: "id", percentage: 100 }],
+      ocrImage: "digest",
+      recordsBefore: { document: 12 },
+      recordsAfter: { document: 12 },
+      recovery: "private-path",
+      workerVersions: ["internal"],
+    }),
+    {
+      ocrSourceHash: "hash",
+      ocrVersions: [{ version_id: "id", percentage: 100 }],
+      ocrImage: "digest",
+    },
+  );
+});

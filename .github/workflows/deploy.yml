@@ -18,13 +18,15 @@ concurrency:
 
 jobs:
   release:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     environment: production
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - name: Require the existing deployment credential
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: test -n "$CLOUDFLARE_API_TOKEN"
       - uses: actions/setup-node@v4
         with:
@@ -43,10 +45,11 @@ jobs:
       - run: python3 -m unittest discover -s ocr/container/tests -p 'test_*.py'
       - uses: actions/cache@v4
         with:
-          path: infra/.state/last-release.json
-          key: secop-release-${{ github.run_id }}
-          restore-keys: secop-release-
+          path: infra/.state/ocr-build-cache.json
+          key: secop-public-safe-ocr-${{ github.run_id }}
+          restore-keys: secop-public-safe-ocr-
       - name: Reconcile and verify the existing production resources
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           OPERATION: ${{ inputs.operation }}
         run: node infra/run.mjs "$OPERATION"

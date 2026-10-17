@@ -82,8 +82,8 @@ The GitHub workflow requires an existing `CLOUDFLARE_API_TOKEN` secret in the
 repository or `production` environment. No deployment credential is created or
 copied automatically. It needs access to this account's Workers/scripts,
 KV, D1, R2, Queues, Vectorize, Containers and image registry. Restrict resource
-scope where supported. The workflow caches only the verified non-secret release
-receipt; D1 exports and raw recovery artifacts stay in the private R2 bucket.
+scope where supported. The workflow caches only OCR build identity (source hash, OCR version and image),
+not record counts, Worker metadata or recovery paths; D1 exports and raw recovery artifacts stay in the private R2 bucket.
 
 ## Data and recovery
 
@@ -110,3 +110,20 @@ never overwrite current data merely because a code deployment failed.
 Schema changes require separately reviewed additive `worker/migrations/` SQL;
 the adoption release does not replay schema SQL or truncate existing tables.
 The initial schema already exists on this live database.
+
+## Public repository boundary
+
+CI runs with a read-only GitHub token and no Cloudflare credential. Fork pull
+requests do not run deployment; the release job requires a manual dispatch from
+`main`. The Cloudflare token is supplied only to the credential check and the
+trusted reconciliation step, not npm install or tests. After publication, restrict
+the production environment to `main` and enable a required reviewer where the
+GitHub plan supports it. Review contributions before merging and require approval
+for outside-contributor workflow runs. Never run untrusted source with production
+credentials. Making code public does not make the private D1/R2 storage public.
+
+Cloudflare account/resource identifiers in the inventory are configuration, not
+authentication credentials. Existing Git history and Actions logs become public
+with repository visibility. Scan those before publication, and rotate any exposed
+credential even if its old commit is subsequently removed. Source recovery SQL,
+live connection files and agent sessions remain ignored and private.

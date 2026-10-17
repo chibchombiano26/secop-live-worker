@@ -15,6 +15,7 @@ import {
 } from "./cloudflare.mjs";
 import { assertSafePlan, assertOcrConfig } from "./policy.mjs";
 import {
+  ocrBuildCache,
   sourceHash,
   ocrUnchanged,
   deploymentVersions,
@@ -243,8 +244,10 @@ try {
       );
       await reconcile(manifest, api, before);
       const previous = JSON.parse(
-        await readFile(join(state, "last-release.json"), "utf8").catch(
-          () => "null",
+        await readFile(join(state, "ocr-build-cache.json"), "utf8").catch(() =>
+          readFile(join(state, "last-release.json"), "utf8").catch(
+            () => "null",
+          ),
         ),
       );
       const hash = await sourceHash(root);
@@ -326,6 +329,10 @@ try {
           seconds: Math.round((Date.now() - started) / 1000),
         };
         await privateJson(join(state, "last-release.json"), release);
+        await privateJson(
+          join(state, "ocr-build-cache.json"),
+          ocrBuildCache(release),
+        );
         await privateJson(join(runDirectory, "verified-release.json"), release);
         await run(
           wrangler,
