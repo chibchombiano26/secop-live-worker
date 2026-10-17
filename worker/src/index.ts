@@ -238,7 +238,7 @@ async function handleRest(req: Request, env: Env): Promise<Response> {
   if (path === "/licitaciones") {
     const limit = num(q("limit"), 20, 100);
     const offset = num(q("offset"), 0, 1_000_000);
-    return cachedJson(req, env, async () => {
+    const load = async () => {
       const soql = buildProcesosQuery({
         estado: q("estado"),
         entidad: q("entidad"),
@@ -247,6 +247,7 @@ async function handleRest(req: Request, env: Env): Promise<Response> {
         q: q("q"),
         desde: q("desde"),
         hasta: q("hasta"),
+        vigentes: q("vigentes") === "true",
         limit,
         offset,
       });
@@ -254,7 +255,10 @@ async function handleRest(req: Request, env: Env): Promise<Response> {
         req,
         page(await socrataFetch(DATASETS.procesos, soql, env), limit, offset),
       );
-    });
+    };
+    // A cached future deadline can expire while the response remains cached.
+    if (q("vigentes") === "true") return Response.json(await load(), { headers: { "Cache-Control": "no-store" } });
+    return cachedJson(req, env, load);
   }
 
   const mLic = path.match(/^\/licitaciones\/(.+)$/);

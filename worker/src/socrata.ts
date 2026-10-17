@@ -43,11 +43,35 @@ export interface ProcesoFilters {
   q?: string;
   desde?: string;
   hasta?: string;
+  vigentes?: boolean;
   limit?: number;
   offset?: number;
 }
 
-export function buildProcesosQuery(f: ProcesoFilters): string {
+const TERMINAL_STATES = [
+  "Cancelado",
+  "Adjudicado",
+  "Seleccionado",
+  "Cerrado",
+  "Terminado",
+  "Finalizado",
+  "Liquidado",
+  "Desierto",
+  "Revocado",
+  "Suspendido",
+  "Evaluación",
+  "En evaluación",
+  "Borrador",
+];
+
+/** Socrata stores these as floating local timestamps. Colombia is UTC-5 year-round. */
+export function colombianFloatingTimestamp(now: Date): string {
+  return new Date(now.getTime() - 5 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 19);
+}
+
+export function buildProcesosQuery(f: ProcesoFilters, now = new Date()): string {
   const limit = Math.max(1, Math.min(f.limit ?? 20, MAX_LIMIT));
   const offset = Math.max(0, f.offset ?? 0);
   const w: string[] = [];
@@ -57,13 +81,19 @@ export function buildProcesosQuery(f: ProcesoFilters): string {
   if (f.departamento) w.push(like("departamento_entidad", f.departamento));
   if (f.desde) w.push(`fecha_de_publicacion_del >= '${esc(f.desde)}'`);
   if (f.hasta) w.push(`fecha_de_publicacion_del <= '${esc(f.hasta)}'`);
+  if (f.vigentes) {
+    w.push(`fecha_de_recepcion_de > '${colombianFloatingTimestamp(now)}'`);
+    w.push(
+      `upper(estado_del_procedimiento) NOT IN (${TERMINAL_STATES.map((state) => `'${state.toUpperCase()}'`).join(", ")})`,
+    );
+  }
   if (f.q)
     w.push(
       wordsAny(["nombre_del_procedimiento", "descripci_n_del_procedimiento"], f.q),
     );
   const where = w.length ? `WHERE ${w.join(" AND ")}` : "";
   return (
-    `SELECT *, :id ${where} ORDER BY fecha_de_publicacion_del DESC, :id` +
+    `SELECT *, :id ${where} ORDER BY ${f.vigentes ? "fecha_de_recepcion_de ASC, :id" : "fecha_de_publicacion_del DESC, :id"}` +
     ` LIMIT ${limit} OFFSET ${offset}`
   );
 }

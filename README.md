@@ -173,3 +173,13 @@ Its API requires `confirmed:true`; explain this impact before requesting it.
 For complete, cached cross-document synthesis, see [joint dossier analysis](docs/guides/joint-analysis.md).
 
 Generated proposal ticket downloads support credential-free browser fetches so Savia can import the DOCX into its private Office suite. The URL remains short-lived and bound to the owner and current dossier/company revisions; CORS does not authorize ticket creation or bypass these checks. Savia stores the imported copy and subsequent editor revisions in its existing R2 document storage.
+
+## Current tender search
+
+Use `vigentes=true` on `/licitaciones` or the boolean MCP argument to search
+future Colombian reception deadlines, excluding terminal, evaluation, draft
+and suspended states. Filtering occurs before pagination; results are ordered
+by nearest deadline. Undated records are excluded. Active REST responses bypass
+the historical response cache so an elapsed deadline is not reused. Omit the
+flag or use false to retain full-history search. This scope does not establish
+that a bidder is eligible.

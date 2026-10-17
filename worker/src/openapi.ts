@@ -24,6 +24,12 @@ export const OPENAPI = {
           { name: "q", in: "query", schema: { type: "string" } },
           { name: "desde", in: "query", schema: { type: "string" } },
           { name: "hasta", in: "query", schema: { type: "string" } },
+          {
+            name: "vigentes",
+            in: "query",
+            description: "When true, requires a future Colombian local reception timestamp and excludes terminal tender states; results are ordered by nearest deadline.",
+            schema: { type: "boolean", default: false },
+          },
           { name: "limit", in: "query", schema: { type: "integer", maximum: 100 } },
           { name: "offset", in: "query", schema: { type: "integer" } },
           { name: "fresh", in: "query", schema: { type: "boolean" } },

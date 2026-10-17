@@ -24,13 +24,14 @@ export function createHandler(
       "buscar_licitaciones",
       {
         description:
-          "Search Colombia SECOP tenders live (full history + just published). Filter by estado (e.g. Publicado), entidad, modalidad, departamento, natural-language text. Use offset/next_offset to paginate.",
+          "Search Colombia SECOP tenders live (full history + just published). Set vigentes=true to include only tenders with a future reception deadline and a nonterminal state, ordered by nearest deadline. Filter by estado (e.g. Publicado), entidad, modalidad, departamento, natural-language text. Use offset/next_offset to paginate.",
         inputSchema: {
           q: z.string().optional(),
           estado: z.string().optional(),
           entidad: z.string().optional(),
           modalidad: z.string().optional(),
           departamento: z.string().optional(),
+          vigentes: z.boolean().optional(),
           limit: z.number().optional(),
           offset: z.number().optional(),
         },
@@ -44,6 +45,7 @@ export function createHandler(
           entidad: a.entidad,
           modalidad: a.modalidad,
           departamento: a.departamento,
+          vigentes: a.vigentes,
           limit,
           offset,
         });
