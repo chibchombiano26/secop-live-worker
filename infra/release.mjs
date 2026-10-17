@@ -24,7 +24,9 @@ export async function sourceHash(root) {
     }
   }
   await visit("ocr");
-  hash.update(await readFile(join(root, "worker/package-lock.json")));
+  // OCR uses only Cloudflare builtins and its container sources. Agent dependencies
+  // must not force a costly, unrelated container rebuild.
+  hash.update("secop-ocr-source-v2");
   return hash.digest("hex");
 }
 export function ocrUnchanged(previous, hash, inventory) {

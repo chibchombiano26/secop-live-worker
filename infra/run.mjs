@@ -110,6 +110,7 @@ try {
   assertOcrConfig(manifest, ocrConfig);
   const before = await inspect(manifest, api, {
     verifyValues: command === "check",
+    allowAgentBootstrap: command !== "check",
   });
   const countsBefore = await recordCounts(manifest, api);
   if (command === "check") {
@@ -250,8 +251,9 @@ try {
           ),
         ),
       );
+      const checkpoint = previous ?? manifest.ocr.verifiedBuild;
       const hash = await sourceHash(root);
-      const skipOcr = ocrUnchanged(previous, hash, before);
+      const skipOcr = ocrUnchanged(checkpoint, hash, before);
       await run(
         "npm",
         ["--prefix", "worker", "run", "bundle"],
@@ -268,7 +270,9 @@ try {
           "OCR source and live deployment match the verified checkpoint; skipping container rebuild.",
         );
       // Re-read to detect changes to secrets/bindings made during a slow container build.
-      const preUpload = await inspect(manifest, api);
+      const preUpload = await inspect(manifest, api, {
+        allowAgentBootstrap: true,
+      });
       if (
         JSON.stringify(deploymentVersions(before.deployments)) !==
         JSON.stringify(deploymentVersions(preUpload.deployments))
@@ -286,6 +290,15 @@ try {
           await readFile(join(root, "worker/dist/bundle.js")),
         );
         uploaded = true;
+        if (manifest.workflow)
+          await api.call(`/workflows/${manifest.workflow.name}`, {
+            method: "PUT",
+            body: JSON.stringify({
+              script_name: manifest.worker,
+              class_name: manifest.workflow.className,
+            }),
+            headers: { "Content-Type": "application/json" },
+          });
         uploadedVersions = deploymentVersions(
           await api.call(`/workers/scripts/${manifest.worker}/deployments`),
         );

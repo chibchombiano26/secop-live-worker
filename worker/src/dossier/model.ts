@@ -16,6 +16,7 @@ export type ModelEnv = {
   MODEL_URL?: string;
   MODEL_NAME?: string;
   MODEL_KEY?: string;
+  OPENROUTER_API_KEY?: string;
   MODEL_MAX_CALLS?: string;
   MODEL_MAX_INPUT_CHARS?: string;
   MODEL_DAILY_LIMIT?: string;
@@ -94,19 +95,20 @@ export class ConfiguredModel implements ModelProvider {
       } catch {
         throw new DossierError("MODEL_UNCONFIGURED", 503);
       }
-      if (
-        url.protocol !== "https:" ||
-        url.username ||
-        url.password ||
-        !this.env.MODEL_KEY
-      )
+      const openrouter =
+        url.hostname === "openrouter.ai" &&
+        url.pathname === "/api/v1/chat/completions";
+      const key = openrouter
+        ? (this.env.OPENROUTER_API_KEY ?? this.env.MODEL_KEY)
+        : this.env.MODEL_KEY;
+      if (url.protocol !== "https:" || url.username || url.password || !key)
         throw new DossierError("MODEL_UNCONFIGURED", 503);
       let response: Response;
       try {
         response = await fetch(url, {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${this.env.MODEL_KEY}`,
+            Authorization: `Bearer ${key}`,
             "Content-Type": "application/json",
           },
           redirect: "error",
@@ -123,6 +125,16 @@ export class ConfiguredModel implements ModelProvider {
             temperature: 0,
             max_tokens: 6000,
             response_format: { type: "json_object" },
+            ...(openrouter
+              ? {
+                  provider: {
+                    sort: "price",
+                    data_collection: "deny",
+                    require_parameters: true,
+                  },
+                  reasoning: { effort: "low" },
+                }
+              : {}),
           }),
         });
       } catch {

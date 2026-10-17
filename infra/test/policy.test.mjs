@@ -233,3 +233,85 @@ test("database recovery copies cannot be uploaded to a publicly accessible bucke
   );
   assert.throws(() => assertPrivateBucket({}, { domains: [] }), /public/);
 });
+test("Flue bindings preserve the owner of durable storage and workflow classes", () => {
+  const m = {
+    ...manifest,
+    agent: {
+      binding: "FLUE_TENDER_STUDY_AGENT",
+      className: "FlueTenderStudyAgent",
+      namespaceId: "pinned-agent",
+      migrationTag: "secop-flue-v1",
+    },
+    workflow: {
+      binding: "DOSSIER_WORKFLOW",
+      name: "secop-dossier-processing",
+      className: "SecopDossierWorkflow",
+    },
+  };
+  const live = [
+    ...desiredBindings(m),
+    ...m.requiredSecrets.map((name) => ({ name, type: "secret_text" })),
+  ];
+  assert.equal(
+    live.find((b) => b.name === m.agent.binding)?.class_name,
+    m.agent.className,
+  );
+  assert.equal(
+    live.find((b) => b.name === m.workflow.binding)?.workflow_name,
+    m.workflow.name,
+  );
+  assert.throws(
+    () =>
+      assertBindings(
+        m,
+        live.map((b) =>
+          b.name === m.agent.binding ? { ...b, namespace_id: "foreign" } : b,
+        ),
+      ),
+    /FLUE_TENDER_STUDY_AGENT/,
+  );
+  assert.throws(
+    () =>
+      assertBindings(
+        m,
+        live.map((b) =>
+          b.name === m.workflow.binding
+            ? { ...b, class_name: "OtherWorkflow" }
+            : b,
+        ),
+      ),
+    /DOSSIER_WORKFLOW/,
+  );
+});
+test("Flue migration is append-only and cannot recreate a deployed agent namespace", () => {
+  const m = {
+    ...manifest,
+    agent: {
+      binding: "FLUE_TENDER_STUDY_AGENT",
+      className: "FlueTenderStudyAgent",
+      migrationTag: "secop-flue-v1",
+    },
+  };
+  assert.deepEqual(workerMetadata(m, {}).migrations, {
+    new_tag: "secop-flue-v1",
+    new_sqlite_classes: ["FlueTenderStudyAgent"],
+  });
+  assert.equal(
+    workerMetadata(m, { migration_tag: "secop-flue-v1" }).migrations,
+    undefined,
+  );
+  assert.throws(
+    () => workerMetadata(m, { migration_tag: "unknown-migration" }),
+    /migration/,
+  );
+});
+
+test("pinned deployed agents never replay creation when settings omit migration tags", () => {
+  assert.equal(
+    workerMetadata(
+      { ...manifest, agent: { ...manifest.agent, namespaceId: "existing" } },
+      {},
+    ).migrations,
+    undefined,
+  );
+});

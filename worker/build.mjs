@@ -1,64 +1,35 @@
-import { readFileSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { createRequire } from "node:module";
+import { builtinModules } from "node:module";
+import { execFileSync } from "node:child_process";
 import { build } from "esbuild";
-
-const require = createRequire(import.meta.url);
-const inlineAssetPlugin = {
-  name: "inline-pdfjs-assets",
-  setup(esbuild) {
-    esbuild.onResolve(
-      { filter: /^pdfjs-dist-assets:cmaps$/ },
-      () => ({ path: "cmaps", namespace: "pdfjs-generated" }),
-    );
-    esbuild.onLoad(
-      { filter: /^cmaps$/, namespace: "pdfjs-generated" },
-      () => {
-        const packageRoot = dirname(require.resolve("pdfjs-dist/build/pdf.min.mjs"));
-        const cmapDirectory = join(packageRoot, "..", "cmaps");
-        const files = readdirSync(cmapDirectory).filter((name) => name.endsWith(".bcmap"));
-        const maps = Object.fromEntries(
-          files.map((name) => [
-            name,
-            readFileSync(join(cmapDirectory, name)).toString("base64"),
-          ]),
-        );
-        return {
-          contents: `export default ${JSON.stringify(maps)};`,
-          loader: "js",
-        };
-      },
-    );
-    esbuild.onResolve(
-      { filter: /^pdfjs-dist\/.+\?inline-(?:text|base64)$/ },
-      (args) => ({ path: args.path, namespace: "pdfjs-inline-asset" }),
-    );
-    esbuild.onLoad(
-      { filter: /.*/, namespace: "pdfjs-inline-asset" },
-      (args) => {
-        const [packagePath, encoding] = args.path.split("?");
-        const path = require.resolve(packagePath);
-        const bytes = readFileSync(path);
-        const value =
-          encoding === "inline-text" ? bytes.toString("utf8") : bytes.toString("base64");
-        return {
-          contents: `export default ${JSON.stringify(value)};`,
-          loader: "js",
-        };
-      },
-    );
-  },
-};
-
+import { readFile } from "node:fs/promises";
+import { resolve, dirname } from "node:path";
+execFileSync(process.execPath, ["node_modules/vite/bin/vite.js", "build"], {
+  stdio: "inherit",
+});
+const redirectPath = resolve(".wrangler/deploy/config.json");
+const redirect = JSON.parse(await readFile(redirectPath, "utf8"));
+const configPath = resolve(dirname(redirectPath), redirect.configPath);
+const config = JSON.parse(await readFile(configPath, "utf8"));
 await build({
-  entryPoints: ["src/index.ts"],
+  entryPoints: [resolve(dirname(configPath), config.main)],
   bundle: true,
   format: "esm",
   platform: "neutral",
   conditions: ["workerd"],
   mainFields: ["module", "main"],
-  external: ["cloudflare:workers"],
+  external: ["cloudflare:*", "node:*"],
   outfile: "dist/bundle.js",
   logLevel: "warning",
-  plugins: [inlineAssetPlugin],
+  plugins: [
+    {
+      name: "cloudflare-node-imports",
+      setup(b) {
+        b.onResolve({ filter: /.*/ }, (a) =>
+          builtinModules.includes(a.path)
+            ? { path: `node:${a.path}`, external: true }
+            : undefined,
+        );
+      },
+    },
+  ],
 });

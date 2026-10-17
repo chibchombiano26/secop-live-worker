@@ -37,6 +37,28 @@ export function desiredBindings(m) {
       environment: "production",
     },
     { name: "AI", type: "ai" },
+    ...(m.agent
+      ? [
+          {
+            name: m.agent.binding,
+            type: "durable_object_namespace",
+            class_name: m.agent.className,
+            ...(m.agent.namespaceId
+              ? { namespace_id: m.agent.namespaceId }
+              : {}),
+          },
+        ]
+      : []),
+    ...(m.workflow
+      ? [
+          {
+            name: m.workflow.binding,
+            type: "workflow",
+            workflow_name: m.workflow.name,
+            class_name: m.workflow.className,
+          },
+        ]
+      : []),
     ...Object.entries(m.variables).map(([name, text]) => ({
       name,
       type: "plain_text",
@@ -53,15 +75,49 @@ function normalized(binding) {
   delete b.project;
   return b;
 }
-export function assertBindings(m, bindings, { verifyValues = false } = {}) {
+export function assertBindings(
+  m,
+  bindings,
+  { verifyValues = false, allowAgentBootstrap = false } = {},
+) {
   if (new Set(bindings.map((b) => b.name)).size !== bindings.length)
     throw new Error("Duplicate live binding names");
   const wanted = desiredBindings(m);
   for (const expected of wanted) {
     const actual = bindings.find((b) => b.name === expected.name);
+    if (
+      !actual &&
+      allowAgentBootstrap &&
+      !m.agent?.namespaceId &&
+      [m.agent?.binding, m.workflow?.binding].includes(expected.name)
+    )
+      continue;
+    if (!actual && expected.type === "plain_text" && !verifyValues) continue;
     if (!actual || actual.type !== expected.type)
       throw new Error(`Missing or incompatible ${expected.name} binding`);
     if (expected.type === "plain_text" && !verifyValues) continue;
+    if (expected.type === "durable_object_namespace") {
+      if (
+        actual.class_name !== expected.class_name ||
+        (actual.script_name && actual.script_name !== m.worker) ||
+        (expected.namespace_id && actual.namespace_id !== expected.namespace_id)
+      )
+        throw new Error(
+          `Resource identity/configuration mismatch: ${expected.name}`,
+        );
+      continue;
+    }
+    if (expected.type === "workflow") {
+      if (
+        actual.workflow_name !== expected.workflow_name ||
+        actual.class_name !== expected.class_name ||
+        (actual.script_name && actual.script_name !== m.worker)
+      )
+        throw new Error(
+          `Resource identity/configuration mismatch: ${expected.name}`,
+        );
+      continue;
+    }
     if (!isDeepStrictEqual(normalized(actual), normalized(expected)))
       throw new Error(
         `Resource identity/configuration mismatch: ${expected.name}`,
@@ -122,6 +178,20 @@ export function workerMetadata(m, settings) {
     compatibility_date: m.compatibilityDate,
     compatibility_flags: m.compatibilityFlags,
   };
+  if (m.agent) {
+    if (
+      settings.migration_tag &&
+      settings.migration_tag !== m.agent.migrationTag
+    )
+      throw new Error(
+        "Unexpected agent migration tag; refusing namespace recreation",
+      );
+    if (!settings.migration_tag && !m.agent.namespaceId)
+      metadata.migrations = {
+        new_tag: m.agent.migrationTag,
+        new_sqlite_classes: [m.agent.className],
+      };
+  }
   for (const key of [
     "usage_model",
     "tags",

@@ -66,7 +66,11 @@ export function client(accountId, token, fetcher = fetch) {
       }),
   };
 }
-export async function inspect(m, api, { verifyValues = false } = {}) {
+export async function inspect(
+  m,
+  api,
+  { verifyValues = false, allowAgentBootstrap = false } = {},
+) {
   const base = `/workers/scripts/${m.worker}`;
   const [
     settings,
@@ -110,7 +114,7 @@ export async function inspect(m, api, { verifyValues = false } = {}) {
     api.call(`/r2/buckets/${m.bucket.name}/domains/custom`),
   ]);
   assertPrivateBucket(bucketManagedDomain, bucketCustomDomains);
-  assertBindings(m, settings.bindings, { verifyValues });
+  assertBindings(m, settings.bindings, { verifyValues, allowAgentBootstrap });
   if (
     verifyValues &&
     (settings.compatibility_date !== m.compatibilityDate ||

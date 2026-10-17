@@ -1,4 +1,8 @@
 import {
+  dispatchWorkflow,
+  type WorkflowEnv,
+} from "./dossier/workflow-dispatch";
+import {
   sweepExpiredProposals,
   sweepOriginalRetention,
 } from "./dossier/retention";
@@ -258,7 +262,10 @@ async function handleRest(req: Request, env: Env): Promise<Response> {
         offset,
       });
     } catch {
-      return Response.json({ detail: "invalid filter values" }, { status: 400 });
+      return Response.json(
+        { detail: "invalid filter values" },
+        { status: 400 },
+      );
     }
     const load = async () => {
       return pageUrls(
@@ -267,7 +274,10 @@ async function handleRest(req: Request, env: Env): Promise<Response> {
       );
     };
     // A cached future deadline can expire while the response remains cached.
-    if (q("vigentes") === "true") return Response.json(await load(), { headers: { "Cache-Control": "no-store" } });
+    if (q("vigentes") === "true")
+      return Response.json(await load(), {
+        headers: { "Cache-Control": "no-store" },
+      });
     return cachedJson(req, env, load);
   }
 
@@ -372,9 +382,15 @@ export default {
   ) => {
     for (const message of batch.messages) {
       try {
-        await processJob(env, message.body, (repo, job) =>
-          executeProcessingJob(repo, job, env),
-        );
+        if ((env as WorkflowEnv).DOSSIER_WORKFLOW)
+          await dispatchWorkflow(
+            env as ProcessingEnv & WorkflowEnv,
+            message.body,
+          );
+        else
+          await processJob(env, message.body, (repo, job) =>
+            executeProcessingJob(repo, job, env),
+          );
         message.ack();
       } catch {
         message.retry({ delaySeconds: 60 });

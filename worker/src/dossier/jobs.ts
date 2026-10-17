@@ -33,6 +33,13 @@ export async function processJob(
   });
   const job = await repo.claimJob(message.jobId);
   if (!job) return;
+  return runClaimedJob(repo, job, execute);
+}
+export async function runClaimedJob(
+  repo: DossierRepository,
+  job: Job,
+  execute: (repo: DossierRepository, job: Job) => Promise<void>,
+) {
   try {
     await execute(repo, job);
     await repo.completeJob(job.id, job.lease!);
