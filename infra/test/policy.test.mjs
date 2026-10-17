@@ -315,3 +315,12 @@ test("pinned deployed agents never replay creation when settings omit migration 
     undefined,
   );
 });
+
+test("agent uploads resolve the owned class rather than forwarding a read-only namespace binding", () => {
+  const metadata = workerMetadata(manifest, {});
+  const binding = metadata.bindings.find(
+    (b) => b.name === manifest.agent.binding,
+  );
+  assert.equal(binding.namespace_id, undefined);
+  assert.equal(binding.class_name, manifest.agent.className);
+});

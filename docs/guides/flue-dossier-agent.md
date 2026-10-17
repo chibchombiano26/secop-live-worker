@@ -14,8 +14,10 @@ owner or company selectors. There are no shell, sandbox or external MCP tools.
 
 `inspect_current_dossier` reads processing coverage. `study_current_request` calls
 the existing grounded-answer processor, including full-corpus review, exhaustive
-saved requirements, company evidence and citation validation. Its successful tool
-result terminates the agent turn. Savia displays the authoritative saved answer,
+saved requirements, company evidence and citation validation. A bounded success or failure tool
+result terminates the agent turn. Processing failure codes return through D1 to
+the Workflow so budget continuations still yield without consuming retry attempts.
+Markers are cleared under the active lease on new attempts and durable-tool replay. Savia displays the authoritative saved answer,
 not a free-form agent acknowledgement. Duplicate study calls reuse the saved
 answer. Tracing is disabled for this integration. Models use OpenRouter with the encrypted
 `OPENROUTER_API_KEY` Worker secret. Grounded analysis routes by price, disallows

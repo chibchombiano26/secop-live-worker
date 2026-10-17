@@ -7,14 +7,14 @@ import { init } from "@flue/runtime";
 import { TenderStudy } from "./agents/tender-study";
 import backend from "./index";
 import { DossierRepository, type Job } from "./dossier/repository";
-import {
-  PRIVATE_SCOPES,
-  privateContextSchema,
-  DossierError,
-} from "./dossier/contracts";
+import { PRIVATE_SCOPES, privateContextSchema } from "./dossier/contracts";
 import { runClaimedJob } from "./dossier/jobs";
 import { executeProcessingJob, type ProcessingEnv } from "./dossier/processing";
-import { agentScopeId, readStudyJob } from "./dossier/agent-scope";
+import {
+  agentScopeId,
+  readStudyJob,
+  assertStudyCompleted,
+} from "./dossier/agent-scope";
 import type { ChatInput } from "./dossier/conversations";
 export class SecopDossierWorkflow extends WorkflowEntrypoint<
   ProcessingEnv,
@@ -53,7 +53,12 @@ export class SecopDossierWorkflow extends WorkflowEntrypoint<
       const request = (await r.read<ChatInput>("message", j.targetId)).value;
       const seed = { ownerId: owner.ownerId, dossierId: request.dossierId };
       const id = await agentScopeId(seed.ownerId, seed.dossierId);
-      j.progress = { ...j.progress, agentId: id, workflowId: event.instanceId };
+      j.progress = {
+        ...j.progress,
+        agentFailure: null,
+        agentId: id,
+        workflowId: event.instanceId,
+      };
       await r.checkpointJob(j.id, j.lease!, j.progress);
       const scope = {
         dossierId: seed.dossierId,
@@ -86,35 +91,12 @@ export class SecopDossierWorkflow extends WorkflowEntrypoint<
           retries: { limit: 1, delay: "2 seconds", backoff: "constant" },
         },
         async () => {
-          try {
-            await agent.read(receipt);
-          } catch (error) {
-            const cause = error instanceof Error ? error.cause : undefined;
-            console.error(
-              JSON.stringify({
-                event: "flue_submission_failure",
-                cause:
-                  cause && typeof cause === "object" && "message" in cause
-                    ? {
-                        name: "name" in cause ? String(cause.name) : "Error",
-                        message: String(cause.message)
-                          .replace(
-                            /(?:sk-|Bearer\s+)[A-Za-z0-9._-]+/gi,
-                            "[redacted]",
-                          )
-                          .slice(0, 400),
-                      }
-                    : "unavailable",
-              }),
-            );
-            throw error;
-          }
+          await agent.read(receipt);
           return { settled: true };
         },
       );
       const current = await r.readJob(j.id);
-      if (current.progress.stage !== "answered")
-        throw new DossierError("AGENT_STUDY_INCOMPLETE", 502, true);
+      assertStudyCompleted(current);
     });
     return { jobId: job.id, state: (await repo.readJob(job.id)).state };
   }

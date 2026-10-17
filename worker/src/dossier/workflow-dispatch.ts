@@ -25,7 +25,8 @@ export async function dispatchWorkflow(
       const state = await instance.status();
       if (
         ["errored", "complete", "terminated"].includes(state.status) &&
-        job.state === "queued"
+        (job.state === "queued" ||
+          (job.state === "running" && (job.leaseUntil ?? 0) <= repo.now()))
       )
         await instance.restart();
     } catch {

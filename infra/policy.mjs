@@ -173,7 +173,11 @@ export function assertOcr(m, settings, subdomain, app) {
 export function workerMetadata(m, settings) {
   const metadata = {
     main_module: "bundle.js",
-    bindings: desiredBindings(m),
+    bindings: desiredBindings(m).map((binding) => {
+      if (binding.type !== "durable_object_namespace") return binding;
+      const { namespace_id, ...ownedClass } = binding;
+      return ownedClass;
+    }),
     keep_bindings: ["secret_text"],
     compatibility_date: m.compatibilityDate,
     compatibility_flags: m.compatibilityFlags,

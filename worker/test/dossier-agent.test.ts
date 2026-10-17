@@ -3,12 +3,15 @@ import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { readFileSync } from "node:fs";
 import { DossierRepository } from "../src/dossier/repository";
 import { dispatchWorkflow } from "../src/dossier/workflow-dispatch";
-import { PRIVATE_SCOPES } from "../src/dossier/contracts";
+import { runClaimedJob } from "../src/dossier/jobs";
+import { PRIVATE_SCOPES, DossierError } from "../src/dossier/contracts";
 import {
   agentScopeId,
   readStudyJob,
   workflowInstanceId,
   executeScopedStudy,
+  executeStudyTool,
+  assertStudyCompleted,
 } from "../src/dossier/agent-scope";
 let mf: Miniflare;
 let repo: DossierRepository;
@@ -223,6 +226,101 @@ describe("private dossier agent isolation", () => {
       { ownerId: "owner-a", jobId: queued.id },
     );
     expect(restarted).toBe(true);
+  });
+  it("recovers expired running jobs whose duplicate workflow already completed", async () => {
+    const queued = await repo.enqueueJob({
+      kind: "chat",
+      targetId: "request-a",
+      key: "expired-running",
+    });
+    await repo.claimJob(queued.id);
+    await repo.db
+      .prepare(
+        "UPDATE dossier_jobs SET lease_until=? WHERE owner_id=? AND id=?",
+      )
+      .bind(repo.now() - 1, "owner-a", queued.id)
+      .run();
+    let restarted = false;
+    await dispatchWorkflow(
+      {
+        ...repo.env,
+        DOSSIER_WORKFLOW: {
+          create: async () => {
+            throw new Error("exists");
+          },
+          get: async () => ({
+            status: async () => ({ status: "complete" }),
+            restart: async () => {
+              restarted = true;
+            },
+          }),
+        },
+      } as any,
+      { ownerId: "owner-a", jobId: queued.id },
+    );
+    expect(restarted).toBe(true);
+  });
+  it("preserves processing checkpoints and yields budget failures across the Flue boundary", async () => {
+    const queued = await repo.enqueueJob({
+      kind: "chat",
+      targetId: "request-a",
+      key: "agent-budget",
+    });
+    const claimed = (await repo.claimJob(queued.id))!;
+    await runClaimedJob(repo, claimed, async (r, j) => {
+      const result = await executeStudyTool(
+        r,
+        {
+          dossierId: "tender-a",
+          jobId: j.id,
+          lease: j.lease!,
+          companyProfileId: "company-a",
+        },
+        async (r, j) => {
+          await r.checkpointJob(j.id, j.lease!, { completedBatches: 3 });
+          throw new DossierError("MODEL_BUDGET_EXCEEDED", 429);
+        },
+      );
+      expect(result.completed).toBe(false);
+      assertStudyCompleted(await r.readJob(j.id));
+    });
+    const yielded = await repo.readJob(claimed.id);
+    expect(yielded.state).toBe("queued");
+    expect(yielded.attempts).toBe(0);
+    expect(yielded.progress.stage).toBe("continuing");
+    expect(yielded.progress.completedBatches).toBe(3);
+    expect(yielded.error).toBeNull();
+    expect(yielded.progress.agentFailure).toEqual({
+      code: "MODEL_BUDGET_EXCEEDED",
+      status: 429,
+      retryable: false,
+    });
+  });
+  it("clears a persisted failure if a durable tool is replayed successfully", async () => {
+    const queued = await repo.enqueueJob({
+      kind: "chat",
+      targetId: "request-a",
+      key: "agent-replay",
+    });
+    const job = (await repo.claimJob(queued.id))!;
+    const scope = {
+      dossierId: "tender-a",
+      jobId: job.id,
+      lease: job.lease!,
+      companyProfileId: "company-a",
+    };
+    await executeStudyTool(repo, scope, async () => {
+      throw new DossierError("MODEL_INVALID_OUTPUT", 502);
+    });
+    await executeStudyTool(repo, scope, async (r, j) => {
+      await r.checkpointJob(j.id, j.lease!, {
+        ...j.progress,
+        stage: "answered",
+      });
+    });
+    const current = await repo.readJob(job.id);
+    expect(() => assertStudyCompleted(current)).not.toThrow();
+    expect(current.progress.agentFailure).toBeNull();
   });
   it("rejects an expired lease before running a study", async () => {
     await repo.db

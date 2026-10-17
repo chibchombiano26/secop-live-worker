@@ -140,7 +140,12 @@ export class ConfiguredModel implements ModelProvider {
       } catch {
         throw new DossierError("MODEL_UNAVAILABLE", 502, true);
       }
-      if (!response.ok) throw new DossierError("MODEL_UNAVAILABLE", 502, true);
+      if (!response.ok)
+        throw new DossierError(
+          `MODEL_PROVIDER_HTTP_${response.status}`,
+          502,
+          response.status === 429 || response.status >= 500,
+        );
       const payload = JSON.parse(
         new TextDecoder().decode(await boundedBytes(response, 2000000)),
       );

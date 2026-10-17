@@ -1,3 +1,4 @@
+import { processingFailure } from "./jobs";
 import { z } from "zod/v4";
 import { DossierError, privateContextSchema } from "./contracts";
 import { sha256 } from "./downloads";
@@ -65,4 +66,48 @@ export async function executeScopedStudy(
   if (current.progress.stage !== "answered")
     throw new DossierError("AGENT_STUDY_INCOMPLETE", 502, true);
   return { completed: true, result: current.progress.result ?? null };
+}
+
+export async function executeStudyTool(
+  repo: DossierRepository,
+  scope: StudyScope,
+  execute: (repo: DossierRepository, job: Job) => Promise<void>,
+) {
+  try {
+    const { job } = await readStudyJob(repo, scope);
+    await repo.checkpointJob(job.id, scope.lease, {
+      ...job.progress,
+      agentFailure: null,
+    });
+    return await executeScopedStudy(repo, scope, execute);
+  } catch (error) {
+    const failure = processingFailure(error);
+    if (failure.code === "LEASE_LOST") throw failure;
+    // Revalidate authorization and the lease before saving a bounded failure marker.
+    const { job } = await readStudyJob(repo, scope);
+    await repo.checkpointJob(job.id, scope.lease, {
+      ...job.progress,
+      agentFailure: {
+        code: failure.code,
+        status: failure.status,
+        retryable: failure.retryable,
+      },
+    });
+    return { completed: false, failure: failure.code };
+  }
+}
+export function assertStudyCompleted(job: Job) {
+  const failure = z
+    .object({
+      code: z.string().max(100),
+      status: z.number().int().min(400).max(599),
+      retryable: z.boolean(),
+    })
+    .nullable()
+    .optional()
+    .parse(job.progress.agentFailure);
+  if (failure)
+    throw new DossierError(failure.code, failure.status, failure.retryable);
+  if (job.progress.stage !== "answered")
+    throw new DossierError("AGENT_STUDY_INCOMPLETE", 502, true);
 }

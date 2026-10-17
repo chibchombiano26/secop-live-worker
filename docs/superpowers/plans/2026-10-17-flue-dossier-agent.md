@@ -9,11 +9,11 @@
 
 ## Tasks
 
-- [ ] Add failing owner/dossier/company/lease isolation tests and deterministic dispatch tests.
-- [ ] Add the scoped study adapter and agent with bounded, idempotent tools and private telemetry.
-- [ ] Introduce checkpointed Workflow job processing while preserving D1 retry/lease semantics.
-- [ ] Integrate Flue's Vite build with existing handlers/PDF assets and safe unified deployment.
-- [ ] Add resource/binding/migration safety tests and update infrastructure/operations guides.
+- [x] Add failing owner/dossier/company/lease isolation tests and deterministic dispatch tests.
+- [x] Add the scoped study adapter and agent with bounded, idempotent tools and private telemetry.
+- [x] Introduce checkpointed Workflow job processing while preserving D1 retry/lease semantics.
+- [x] Integrate Flue's Vite build with existing handlers/PDF assets and safe unified deployment.
+- [x] Add resource/binding/migration safety tests and update infrastructure/operations guides.
 - [ ] Run all tests, types, build, secret/dependency scanning; review and merge a green PR.
 - [ ] Deploy without data/resource loss and test a saved dossier through Savia Preview.
 

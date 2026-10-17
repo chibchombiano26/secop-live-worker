@@ -122,3 +122,31 @@ describe("OpenRouter credential boundaries", () => {
     }
   });
 });
+
+describe("provider failure classification", () => {
+  it.each([
+    [402, false],
+    [429, true],
+    [500, true],
+  ])(
+    "retains HTTP %i without logging provider response bodies",
+    async (status, retryable) => {
+      const request = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValue(new Response("private provider body", { status }));
+      try {
+        const model = new ConfiguredModel({
+          MODEL_NAME: "test",
+          MODEL_URL: "https://openrouter.ai/api/v1/chat/completions",
+          OPENROUTER_API_KEY: "private-fixture",
+        });
+        await expect(model.generate(input)).rejects.toMatchObject({
+          code: `MODEL_PROVIDER_HTTP_${status}`,
+          retryable,
+        });
+      } finally {
+        request.mockRestore();
+      }
+    },
+  );
+});
