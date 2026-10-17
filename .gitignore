@@ -1,0 +1,27 @@
+node_modules/
+worker/dist/
+worker/.wrangler/
+worker/.dev.vars
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate*
+*.auto.tfvars
+.env
+.wrangler/
+tofu/tfstate*
+infra/.state/
+worker/.wrangler.production.json
+*.tfplan
+*.tfstate
+*.tfstate.backup
+
+# Local agent sessions can contain live credentials and recovery material.
+.superpowers/
+*.private.*
+.env.*
+!.env.example
+!.env.sample
+*.tfvars
+
+# Checksum-verified local security tools
+.tools/
