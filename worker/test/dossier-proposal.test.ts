@@ -215,6 +215,8 @@ describe("SECOP proposal DOCX", () => {
     );
     expect(response.headers.get("content-disposition")).toContain("attachment");
     expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(response.headers.get("access-control-allow-credentials")).toBeNull();
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
     const docxBytes = new Uint8Array(await response.arrayBuffer());
@@ -226,7 +228,28 @@ describe("SECOP proposal DOCX", () => {
     expect(xml).toContain("&amp;");
     expect(xml).toContain("&lt;según pliego&gt;");
     expect(xml).not.toContain("\u0001");
-    expect(xml).not.toContain("<w:br/></w:p>");
+    expect(xml).not.toContain("<w:br/>");
+    expect(xml).not.toContain("<w:keepLines/>");
+    const paragraphTexts = [...xml.matchAll(/<w:p>[\s\S]*?<\/w:p>/gu)].map(
+      ([paragraph]) =>
+        paragraph
+          .replace(/<[^>]+>/gu, " ")
+          .replaceAll("&amp;", "&")
+          .replaceAll("&lt;", "<")
+          .replaceAll("&gt;", ">")
+          .replace(/\s+/gu, " ")
+          .trim(),
+    );
+    expect(paragraphTexts).toContain(
+      "R001 · Experiencia · marcado obligatorio",
+    );
+    expect(paragraphTexts).toContain(
+      "Acreditar experiencia mínima en servicios de soporte & operación <según pliego>.",
+    );
+    const styles = new TextDecoder().decode(parts["word/styles.xml"]);
+    expect(styles).toContain('w:styleId="Requirement"');
+    expect(styles).toContain('w:styleId="SourceTitle"');
+    expect(styles).toContain('w:styleId="SourceText"');
     const text = xml
       .replace(/<[^>]+>/gu, " ")
       .replaceAll("&amp;", "&")

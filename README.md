@@ -168,3 +168,5 @@ company evaluations stale; existing reports/conversations may retain quotations.
 Its API requires `confirmed:true`; explain this impact before requesting it.
 
 For complete, cached cross-document synthesis, see [joint dossier analysis](docs/guides/joint-analysis.md).
+
+Generated proposal ticket downloads support credential-free browser fetches so Savia can import the DOCX into its private Office suite. The URL remains short-lived and bound to the owner and current dossier/company revisions; CORS does not authorize ticket creation or bypass these checks. Savia stores the imported copy and subsequent editor revisions in its existing R2 document storage.
