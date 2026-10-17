@@ -3,6 +3,14 @@
 The private service is optional. Existing public REST/MCP reads work without D1,
 R2, Queues or private credentials. Savia's server does not implement this feature.
 
+## Live deployment
+
+Use the [unified infrastructure entry point](guides/infrastructure.md) for the
+existing live service. `npm run infra:plan` validates adopted resource identities;
+`npm run infra:deploy` preserves the current storage, credentials and OCR namespace.
+The provisioning checklist below applies to a separate new/validation environment.
+Do not apply the historical `tofu/` scaffold over the live service.
+
 ## Provision and configure
 
 1. Preserve the current Worker source/version, settings, secret names, OAuth KV

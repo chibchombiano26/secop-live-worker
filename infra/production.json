@@ -1,0 +1,80 @@
+{
+  "accountId": "08a0d36f8b0357684f83e4bfeb6628b6",
+  "worker": "secop-live-worker",
+  "url": "https://secop-live-worker.jose-douglas-dev.workers.dev",
+  "compatibilityDate": "2026-10-01",
+  "compatibilityFlags": ["global_fetch_strictly_public"],
+  "kv": {
+    "OAUTH_KV": {
+      "id": "d2a27b48c1544997b23be9b6c130bb52",
+      "title": "secop-live-worker-oauth"
+    },
+    "CATALOG_KV": {
+      "id": "1e8e692676e04027862e07b54813affa",
+      "title": "secop-live-catalogs"
+    }
+  },
+  "database": {
+    "id": "b3d04949-b28b-4847-bbe2-bd06fbeb182b",
+    "name": "secop-dossiers"
+  },
+  "bucket": {
+    "name": "secop-dossiers-files",
+    "jurisdiction": "default",
+    "location": "enam",
+    "storageClass": "Standard"
+  },
+  "queues": {
+    "jobs": {
+      "id": "b4e2c7ca82114599887fdd359aa4dead",
+      "name": "secop-dossiers-jobs"
+    },
+    "dead": {
+      "id": "e96d627650e343bb85eddfa61b73bd0f",
+      "name": "secop-dossiers-dead"
+    }
+  },
+  "consumer": {
+    "id": "fdbd90c749ac4a4d91f2928be2e92cee",
+    "settings": {
+      "batch_size": 1,
+      "max_retries": 5,
+      "max_wait_time_ms": 5000,
+      "max_concurrency": 2,
+      "retry_delay": 0
+    }
+  },
+  "crons": ["* * * * *"],
+  "vectorize": {
+    "name": "secop-dossier-evidence",
+    "dimensions": 1024,
+    "metric": "cosine",
+    "metadata": {
+      "ownerScope": "string",
+      "tenderScope": "string",
+      "generation": "string"
+    }
+  },
+  "ocr": {
+    "worker": "secop-cpu-ocr",
+    "namespaceId": "24b3a9005edd41b99090e27d444b4eca",
+    "applicationId": "a034168f-7299-4417-9418-20b3b231f6f7",
+    "className": "CpuOcrContainer",
+    "instanceType": "standard-2",
+    "maxInstances": 1
+  },
+  "variables": {
+    "AI_PROVIDER_LABEL": "Cloudflare Workers AI",
+    "CACHE_TTL": "600",
+    "MODEL_DAILY_LIMIT": "1000",
+    "MODEL_MAX_CALLS": "64",
+    "MODEL_MAX_INPUT_CHARS": "50000",
+    "MODEL_NAME": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+  },
+  "requiredSecrets": [
+    "API_KEYS",
+    "PRIVATE_AUTH_PEPPER",
+    "PRIVATE_CONNECTIONS",
+    "SOCRATA_APP_TOKEN"
+  ]
+}

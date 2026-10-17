@@ -14,32 +14,18 @@ only adds a binding to that index and does not create, replace, or delete it.
 The retrieval module uses the Worker AI binding directly with
 `@cf/baai/bge-m3`; no separate inference adapter is needed.
 
-Provision the index and its string metadata indexes before any vector is
-inserted. From `worker/`, using the repository's Wrangler installation:
+The live `secop-dossier-evidence` index and its string metadata indexes are
+owned by `infra/production.json` and the unified infrastructure reconciler.
+Run `npm run infra:plan` / `npm run infra:deploy` from the repository root.
+The command checks 1024-dimensional cosine configuration and adds missing
+`ownerScope`, `tenderScope` and `generation` string indexes without deleting or
+replacing an existing index. Missing live indexes and incompatible schemas fail
+closed. Existing vectors and namespaces are retained.
 
-```sh
-./node_modules/.bin/wrangler vectorize create secop-dossier-evidence --dimensions=1024 --metric=cosine
-./node_modules/.bin/wrangler vectorize create-metadata-index secop-dossier-evidence --propertyName=ownerScope --type=string
-./node_modules/.bin/wrangler vectorize create-metadata-index secop-dossier-evidence --propertyName=tenderScope --type=string
-./node_modules/.bin/wrangler vectorize create-metadata-index secop-dossier-evidence --propertyName=generation --type=string
-```
-
-These are Cloudflare's current Wrangler commands for creating an index and
-metadata indexes. See [Vectorize Wrangler commands](https://developers.cloudflare.com/vectorize/reference/wrangler-commands/),
-[metadata filtering](https://developers.cloudflare.com/vectorize/reference/metadata-filtering/),
-and [Wrangler configuration](https://developers.cloudflare.com/workers/wrangler/configuration/).
-
-For OpenTofu, set `dossier_vector_index_name = "secop-dossier-evidence"` and
-enable dossiers. An empty name (the default) omits `DOSSIER_VECTORS`, preserving
-deployments that do not have a Vectorize index. For local Wrangler use, the
-optional equivalent is shown commented in `worker/wrangler.toml` under
-`env.dossier`:
-
-```toml
-[[env.dossier.vectorize]]
-binding = "DOSSIER_VECTORS"
-index_name = "secop-dossier-evidence"
-```
+See [infrastructure and recovery](infrastructure.md) for the complete resource
+inventory, adoption, deployment and state/rollback policy. A separate environment
+requires a reviewed provisioning inventory; the live adoption command deliberately
+does not silently create an empty replacement index.
 
 ## Isolation and freshness
 

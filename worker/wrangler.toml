@@ -1,4 +1,6 @@
-name = "secop-live-worker"
+# Local development only. Live deployment is generated from infra/production.json.
+# Run npm run infra:deploy at the repository root; never deploy placeholder IDs.
+name = "secop-live-worker-local"
 main = "dist/bundle.js"
 compatibility_date = "2026-10-01"
 compatibility_flags = ["global_fetch_strictly_public"]

@@ -2,7 +2,8 @@
 
 TypeScript Cloudflare Worker mirroring `secop-live`: live Socrata search,
 TTL cache (Cache API), API-key auth, Scalar docs, MCP (Streamable HTTP).
-Deployed with **OpenTofu** to **Cloudflare** and/or **Docker**.
+Live infrastructure is adopted with **OpenTofu**, Vectorize API reconciliation
+and **Wrangler** for private OCR containers through one deployment command.
 
 ## Layout
 
@@ -10,7 +11,10 @@ Deployed with **OpenTofu** to **Cloudflare** and/or **Docker**.
 worker/          TS worker (REST /licitaciones, /documentos/search,
                  /scalar, /openapi.json, /mcp)
 worker/test/     vitest unit tests (no network)
-tofu/            versions/variables/main + modules/{worker,docker}
+infra/           production inventory, unified plan/deploy/check, safety tests
+tofu/live/       protected imports of the existing live persistent resources
+tofu/            historical sandbox/Docker scaffold
+ocr/            private Cloudflare CPU OCR Worker and container
 ```
 
 ## Develop
@@ -21,26 +25,23 @@ npm test && npm run typecheck
 npm run dev        # Wrangler runs the custom PDF.js-aware bundle step first
 ```
 
-## Deploy with OpenTofu
+## Deploy the existing live service
 
-```bash
-cd worker && npm run bundle   # builds dist/bundle.js used by OpenTofu
-cd ../tofu
-cp dev.tfvars.example dev.auto.tfvars   # fill secrets (never commit)
-docker run --rm -v "$PWD:/tofu" -w /tofu ghcr.io/opentofu/opentofu:latest init
-# Cloudflare only:
-docker run --rm -v "$PWD:/tofu" -w /tofu ghcr.io/opentofu/opentofu:latest \
-  apply -var-file=dev.auto.tfvars -target=module.worker
-# Docker version (secop-live GHCR image, local daemon):
-docker run --rm -v "$PWD:/tofu" -v /var/run/docker.sock:/var/run/docker.sock \
-  -w /tofu ghcr.io/opentofu/opentofu:latest \
-  apply -var-file=dev.auto.tfvars -target=module.docker
+```sh
+npm ci --prefix worker
+npm run infra:plan
+npm run infra:deploy
+npm run infra:check
 ```
 
-Cloudflare needs: API token (Workers edit) + account ID (`CLOUDFLARE_*` vars).
-Optional `custom_hostname` (+ `cloudflare_zone_id`) for your domain.
-Docker needs: local daemon + published image (auto-published from
-`secop-live` repo to GHCR on every main push).
+The production inventory pins the existing D1, R2, KV, queues, Vectorize and OCR
+identities. Deployment imports existing resources, preserves secrets, stores
+private recovery copies in R2 and verifies data counts afterwards. It never
+recreates missing storage. See [infrastructure and recovery](docs/guides/infrastructure.md)
+for prerequisites, permissions, state handling and the manual GitHub workflow.
+
+The historical `tofu/` root is a fresh/sandbox/Docker scaffold, **not the live
+service configuration**. Production uses `tofu/live/` through the commands above.
 
 ## Endpoints (same contract as secop-live)
 

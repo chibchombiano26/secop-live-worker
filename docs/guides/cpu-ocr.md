@@ -12,23 +12,17 @@ No user-supplied routing URL or filename reaches a shell.
 
 ## Deploy
 
-Docker must be running. From the repository root:
+Docker must be running when OCR sources or its live image/version changed.
+From the repository root run `npm run infra:plan`, then `npm run infra:deploy`.
+The unified command deploys the existing OCR service before SECOP and verifies
+the original Durable Object namespace, application ID and capacity. It preserves
+all SECOP bindings/secrets. Unchanged, previously verified OCR releases skip
+container rebuilding.
 
-```sh
-worker/node_modules/.bin/wrangler deploy --config ocr/wrangler.jsonc
-```
-
-Deploy the SECOP Worker with this additive service binding, preserving all
-existing OAuth/catalog/D1/R2/queue bindings and secrets:
-
-```json
-{"services":[{"binding":"SECOP_OCR","service":"secop-cpu-ocr"}]}
-```
-
-For OpenTofu deployments set `enable_dossiers=true` and
-`ocr_worker_service="secop-cpu-ocr"`; the container service itself is deployed by
-Wrangler. Do not replace an existing deployment with placeholder resource IDs.
-Removing the binding restores native extraction without deleting originals.
+Do not deploy the live service from placeholder Wrangler/OpenTofu configurations.
+See [infrastructure and recovery](infrastructure.md) for adoption, permissions,
+backups, state and rollback. `ocr/wrangler.jsonc` remains the declarative OCR
+configuration consumed by this entry point; no Savia platform deployment is needed.
 
 ## Behavior and limits
 

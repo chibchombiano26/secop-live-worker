@@ -1,0 +1,14 @@
+{
+  "name": "secop-infrastructure",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "infra:plan": "node infra/run.mjs plan",
+    "infra:deploy": "node infra/run.mjs deploy",
+    "infra:check": "node infra/run.mjs check",
+    "test:infra": "node --test infra/test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
