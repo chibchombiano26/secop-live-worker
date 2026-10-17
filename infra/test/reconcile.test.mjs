@@ -111,3 +111,29 @@ test("public CI cache excludes dossier counts, worker metadata and recovery path
     },
   );
 });
+test("OCR fingerprints change with OCR sources, not unrelated agent dependencies", async () => {
+  const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { sourceHash } = await import("../release.mjs");
+  const root = await mkdtemp(join(tmpdir(), "secop-ocr-hash-"));
+  try {
+    await mkdir(join(root, "ocr"));
+    await mkdir(join(root, "worker"));
+    await writeFile(join(root, "ocr/index.ts"), "original OCR");
+    await writeFile(
+      join(root, "worker/package-lock.json"),
+      "old agent dependencies",
+    );
+    const first = await sourceHash(root);
+    await writeFile(
+      join(root, "worker/package-lock.json"),
+      "new agent dependencies",
+    );
+    assert.equal(await sourceHash(root), first);
+    await writeFile(join(root, "ocr/index.ts"), "updated OCR");
+    assert.notEqual(await sourceHash(root), first);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

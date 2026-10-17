@@ -127,3 +127,12 @@ authentication credentials. Existing Git history and Actions logs become public
 with repository visibility. Scan those before publication, and rotate any exposed
 credential even if its old commit is subsequently removed. Source recovery SQL,
 live connection files and agent sessions remain ignored and private.
+
+## Dossier agents and durable jobs
+
+Flue agents run in the existing SECOP Worker with an append-only SQLite Durable
+Object migration. Cloudflare Workflows wrap saved processing jobs. Their declared
+bindings, migration tag and assigned namespace identity are governed alongside the
+existing resources; initial bootstrap may add these resources, never replace the
+existing database, bucket, indexes or OCR namespace. See
+[private dossier study agents](flue-dossier-agent.md) for isolation and recovery.

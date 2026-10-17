@@ -33,20 +33,18 @@ export async function processJob(
   });
   const job = await repo.claimJob(message.jobId);
   if (!job) return;
+  return runClaimedJob(repo, job, execute);
+}
+export async function runClaimedJob(
+  repo: DossierRepository,
+  job: Job,
+  execute: (repo: DossierRepository, job: Job) => Promise<void>,
+) {
   try {
     await execute(repo, job);
     await repo.completeJob(job.id, job.lease!);
   } catch (error) {
-    const failure =
-      error instanceof DossierError
-        ? error
-        : new DossierError(
-            error instanceof ZodError
-              ? "MODEL_SCHEMA_INVALID"
-              : "PROCESSING_FAILED",
-            502,
-            true,
-          );
+    const failure = processingFailure(error);
     if (failure.code === "LEASE_LOST") return;
     console.error(
       JSON.stringify({
@@ -89,4 +87,16 @@ export async function processJob(
 
     await repo.failJob(job.id, job.lease!, failure.code, failure.retryable);
   }
+}
+
+export function processingFailure(error: unknown) {
+  return error instanceof DossierError
+    ? error
+    : new DossierError(
+        error instanceof ZodError
+          ? "MODEL_SCHEMA_INVALID"
+          : "PROCESSING_FAILED",
+        502,
+        true,
+      );
 }

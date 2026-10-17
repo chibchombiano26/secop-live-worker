@@ -3,7 +3,7 @@
   "worker": "secop-live-worker",
   "url": "https://secop-live-worker.jose-douglas-dev.workers.dev",
   "compatibilityDate": "2026-10-01",
-  "compatibilityFlags": ["global_fetch_strictly_public"],
+  "compatibilityFlags": ["global_fetch_strictly_public", "nodejs_compat"],
   "kv": {
     "OAUTH_KV": {
       "id": "d2a27b48c1544997b23be9b6c130bb52",
@@ -61,20 +61,44 @@
     "applicationId": "a034168f-7299-4417-9418-20b3b231f6f7",
     "className": "CpuOcrContainer",
     "instanceType": "standard-2",
-    "maxInstances": 1
+    "maxInstances": 1,
+    "verifiedBuild": {
+      "ocrSourceHash": "9b05a199d467f42f6ce8ecadf96697300cb020efa23c96c95b7948a7a4ea0761",
+      "ocrImage": "registry.cloudflare.com/08a0d36f8b0357684f83e4bfeb6628b6/secop-cpu-ocr-cpuocrcontainer@sha256:9fb05260d492a17881699c69364e00bb5c468b90f792ce5b3724eccd931cad35",
+      "ocrVersions": [
+        {
+          "version_id": "12f81879-0753-426a-8262-340d6ca148e5",
+          "percentage": 100
+        }
+      ]
+    }
   },
   "variables": {
-    "AI_PROVIDER_LABEL": "Cloudflare Workers AI",
+    "AI_PROVIDER_LABEL": "OpenRouter",
     "CACHE_TTL": "600",
     "MODEL_DAILY_LIMIT": "1000",
     "MODEL_MAX_CALLS": "64",
     "MODEL_MAX_INPUT_CHARS": "50000",
-    "MODEL_NAME": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    "MODEL_NAME": "openai/gpt-oss-20b",
+    "MODEL_URL": "https://openrouter.ai/api/v1/chat/completions"
   },
   "requiredSecrets": [
     "API_KEYS",
     "PRIVATE_AUTH_PEPPER",
     "PRIVATE_CONNECTIONS",
-    "SOCRATA_APP_TOKEN"
-  ]
+    "SOCRATA_APP_TOKEN",
+    "OPENROUTER_API_KEY"
+  ],
+  "agent": {
+    "binding": "FLUE_TENDER_STUDY_AGENT",
+    "className": "FlueTenderStudyAgent",
+    "migrationTag": "secop-flue-v1",
+    "namespaceId": "d19c923f0ba349ebadca2d0ff8a9b477",
+    "codeUpdateMaxDelaySeconds": 30
+  },
+  "workflow": {
+    "binding": "DOSSIER_WORKFLOW",
+    "name": "secop-dossier-processing",
+    "className": "SecopDossierWorkflow"
+  }
 }

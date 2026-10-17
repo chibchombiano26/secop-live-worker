@@ -1,0 +1,49 @@
+{
+  "name": "secop-live-worker-local",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "migrations": [
+    {
+      "tag": "secop-flue-v1",
+      "new_sqlite_classes": ["FlueTenderStudyAgent"],
+    },
+  ],
+  "workflows": [
+    {
+      "binding": "DOSSIER_WORKFLOW",
+      "name": "secop-dossier-processing",
+      "class_name": "SecopDossierWorkflow",
+    },
+  ],
+  "d1_databases": [
+    {
+      "binding": "DOSSIER_DB",
+      "database_name": "secop-dossiers-local",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "DOSSIER_FILES",
+      "bucket_name": "secop-dossiers-local",
+    },
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "00000000000000000000000000000000",
+    },
+    {
+      "binding": "CATALOG_KV",
+      "id": "00000000000000000000000000000001",
+    },
+  ],
+  "ai": {
+    "binding": "AI",
+  },
+  "vars": {
+    "MODEL_NAME": "openai/gpt-oss-20b",
+  },
+}

@@ -65,3 +65,119 @@ describe("configured model boundaries", () => {
     ).rejects.toThrow("MODEL_CONTEXT_LIMIT");
   });
 });
+describe("OpenRouter credential boundaries", () => {
+  it("uses the Worker secret only in authorization and requests inexpensive private routing", async () => {
+    const secret = "private-openrouter-fixture";
+    const request = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (url, options) => {
+        expect(String(url)).toBe(
+          "https://openrouter.ai/api/v1/chat/completions",
+        );
+        expect(new Headers(options?.headers).get("Authorization")).toBe(
+          `Bearer ${secret}`,
+        );
+        expect(String(options?.body)).not.toContain(secret);
+        expect(JSON.parse(String(options?.body)).provider).toEqual({
+          sort: "price",
+          data_collection: "deny",
+          require_parameters: true,
+        });
+        return Response.json({
+          choices: [
+            {
+              finish_reason: "stop",
+              message: { content: '{"answer":"Cited evidence required"}' },
+            },
+          ],
+        });
+      });
+    try {
+      const model = new ConfiguredModel({
+        MODEL_NAME: "openai/gpt-oss-20b",
+        MODEL_URL: "https://openrouter.ai/api/v1/chat/completions",
+        OPENROUTER_API_KEY: secret,
+      });
+      expect(await model.generate(input)).toEqual({
+        answer: "Cited evidence required",
+      });
+    } finally {
+      request.mockRestore();
+    }
+  });
+  it("never forwards the OpenRouter secret to a different model host", async () => {
+    const request = vi.spyOn(globalThis, "fetch");
+    try {
+      const model = new ConfiguredModel({
+        MODEL_NAME: "test",
+        MODEL_URL: "https://other.invalid/chat",
+        OPENROUTER_API_KEY: "private-openrouter-fixture",
+      });
+      await expect(model.generate(input)).rejects.toMatchObject({
+        code: "MODEL_UNCONFIGURED",
+      });
+      expect(request).not.toHaveBeenCalled();
+    } finally {
+      request.mockRestore();
+    }
+  });
+});
+
+describe("provider failure classification", () => {
+  it.each([
+    [402, false],
+    [429, true],
+    [500, true],
+  ])(
+    "retains HTTP %i without logging provider response bodies",
+    async (status, retryable) => {
+      const request = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValue(new Response("private provider body", { status }));
+      try {
+        const model = new ConfiguredModel({
+          MODEL_NAME: "test",
+          MODEL_URL: "https://openrouter.ai/api/v1/chat/completions",
+          OPENROUTER_API_KEY: "private-fixture",
+        });
+        await expect(model.generate(input)).rejects.toMatchObject({
+          code: `MODEL_PROVIDER_HTTP_${status}`,
+          retryable,
+        });
+      } finally {
+        request.mockRestore();
+      }
+    },
+  );
+});
+
+describe("OpenRouter structured responses", () => {
+  it("sends the evidence response schema as a strict provider constraint", async () => {
+    const schema = {
+      type: "object",
+      properties: { answer: { type: "string" } },
+      required: ["answer"],
+      additionalProperties: false,
+    };
+    const request = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (_url, options) => {
+        expect(JSON.parse(String(options?.body)).response_format).toEqual({
+          type: "json_schema",
+          json_schema: { name: "secop_response", schema, strict: true },
+        });
+        return Response.json({
+          choices: [{ message: { content: '{"answer":"ok"}' } }],
+        });
+      });
+    try {
+      await new ConfiguredModel({
+        MODEL_NAME: "openai/gpt-oss-20b",
+        MODEL_URL: "https://openrouter.ai/api/v1/chat/completions",
+        OPENROUTER_API_KEY: "private-fixture",
+      }).generate({ ...input, outputSchema: schema });
+    } finally {
+      request.mockRestore();
+    }
+  });
+});

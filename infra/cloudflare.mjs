@@ -66,7 +66,11 @@ export function client(accountId, token, fetcher = fetch) {
       }),
   };
 }
-export async function inspect(m, api, { verifyValues = false } = {}) {
+export async function inspect(
+  m,
+  api,
+  { verifyValues = false, allowAgentBootstrap = false } = {},
+) {
   const base = `/workers/scripts/${m.worker}`;
   const [
     settings,
@@ -109,8 +113,12 @@ export async function inspect(m, api, { verifyValues = false } = {}) {
     api.call(`/r2/buckets/${m.bucket.name}/domains/managed`),
     api.call(`/r2/buckets/${m.bucket.name}/domains/custom`),
   ]);
+  const service = await api.call(`/workers/services/${m.worker}`);
+  settings.migration_tag = service.default_environment?.script?.migration_tag;
+  if (m.agent?.namespaceId && settings.migration_tag !== m.agent.migrationTag)
+    throw new Error("Agent migration tag mismatch");
   assertPrivateBucket(bucketManagedDomain, bucketCustomDomains);
-  assertBindings(m, settings.bindings, { verifyValues });
+  assertBindings(m, settings.bindings, { verifyValues, allowAgentBootstrap });
   if (
     verifyValues &&
     (settings.compatibility_date !== m.compatibilityDate ||
