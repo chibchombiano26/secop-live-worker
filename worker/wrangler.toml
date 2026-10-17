@@ -1,0 +1,47 @@
+# Local development only. Live deployment is generated from infra/production.json.
+# Run npm run infra:deploy at the repository root; never deploy placeholder IDs.
+name = "secop-live-worker-local"
+main = "dist/bundle.js"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["global_fetch_strictly_public"]
+no_bundle = true
+
+[build]
+command = "npm run bundle"
+watch_dir = ["src", "build.mjs"]
+
+[vars]
+CACHE_TTL = "600"
+
+# Dev placeholder. Real binding comes from tofu (KV created per account).
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "00000000000000000000000000000000"
+
+# Private dossier resources are opt-in: replace IDs using provisioned resources.
+# Keep these in a separate environment so public-only development still works.
+[env.dossier]
+name = "secop-live-worker-dossier"
+[[env.dossier.d1_databases]]
+binding = "DOSSIER_DB"
+database_name = "secop-dossiers"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+[[env.dossier.r2_buckets]]
+binding = "DOSSIER_FILES"
+bucket_name = "secop-dossier-files"
+[[env.dossier.queues.producers]]
+binding = "DOSSIER_QUEUE"
+queue = "secop-dossier-jobs"
+[[env.dossier.queues.consumers]]
+queue = "secop-dossier-jobs"
+max_batch_size = 1
+max_retries = 5
+dead_letter_queue = "secop-dossier-dead-letter"
+# Optional existing Vectorize index for dossier retrieval. Configure the same
+# index through dossier_vector_index_name when deploying with OpenTofu.
+# [[env.dossier.vectorize]]
+# binding = "DOSSIER_VECTORS"
+# index_name = "secop-dossier-evidence"
+[env.dossier.triggers]
+crons = ["* * * * *"]
