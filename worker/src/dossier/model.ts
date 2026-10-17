@@ -124,7 +124,17 @@ export class ConfiguredModel implements ModelProvider {
             ],
             temperature: 0,
             max_tokens: 6000,
-            response_format: { type: "json_object" },
+            response_format:
+              openrouter && input.outputSchema
+                ? {
+                    type: "json_schema",
+                    json_schema: {
+                      name: "secop_response",
+                      schema: input.outputSchema,
+                      strict: true,
+                    },
+                  }
+                : { type: "json_object" },
             ...(openrouter
               ? {
                   provider: {

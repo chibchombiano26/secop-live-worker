@@ -150,3 +150,34 @@ describe("provider failure classification", () => {
     },
   );
 });
+
+describe("OpenRouter structured responses", () => {
+  it("sends the evidence response schema as a strict provider constraint", async () => {
+    const schema = {
+      type: "object",
+      properties: { answer: { type: "string" } },
+      required: ["answer"],
+      additionalProperties: false,
+    };
+    const request = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (_url, options) => {
+        expect(JSON.parse(String(options?.body)).response_format).toEqual({
+          type: "json_schema",
+          json_schema: { name: "secop_response", schema, strict: true },
+        });
+        return Response.json({
+          choices: [{ message: { content: '{"answer":"ok"}' } }],
+        });
+      });
+    try {
+      await new ConfiguredModel({
+        MODEL_NAME: "openai/gpt-oss-20b",
+        MODEL_URL: "https://openrouter.ai/api/v1/chat/completions",
+        OPENROUTER_API_KEY: "private-fixture",
+      }).generate({ ...input, outputSchema: schema });
+    } finally {
+      request.mockRestore();
+    }
+  });
+});
