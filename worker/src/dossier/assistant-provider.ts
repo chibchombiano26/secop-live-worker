@@ -373,6 +373,9 @@ export async function runAssistantProvider(
             id: "proposal-docx",
             label: "Generar propuesta DOCX",
             format: "docx",
+            ...(!context.companyProfileId
+              ? { fileName: "borrador-propuesta.docx" }
+              : {}),
           },
         ]
       : [],
