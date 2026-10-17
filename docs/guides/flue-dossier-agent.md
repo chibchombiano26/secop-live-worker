@@ -24,7 +24,10 @@ Duplicate study calls reuse the saved
 answer. Tracing is disabled for this integration. Models use OpenRouter with the encrypted
 `OPENROUTER_API_KEY` Worker secret. Grounded analysis routes by price, disallows
 provider data collection and uses low reasoning effort; the initial inexpensive
-model is `openai/gpt-oss-20b`. Workers AI remains available for embeddings/OCR.
+coordinator model is `openai/gpt-oss-20b`; evidence study uses
+`openai/gpt-oss-120b` to reduce confusion between quotations, awarded amounts and
+official budgets. Both use low reasoning effort, and evidence responses request
+the provider's constrained JSON schema. Workers AI remains available for embeddings/OCR.
 
 ## Workflows and recovery
 

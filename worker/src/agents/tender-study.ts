@@ -25,7 +25,7 @@ export function TenderStudy(props: AgentProps) {
   const seed = agentSeedSchema.parse(useInitialData());
   const delivery = useDelivery();
   const env = getCloudflareContext().env as ProcessingEnv;
-  useModel(`openrouter/${env.MODEL_NAME}`, {
+  useModel(`openrouter/${env.AGENT_MODEL_NAME ?? env.MODEL_NAME}`, {
     compaction: false,
     thinkingLevel: "low",
   });
