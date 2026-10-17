@@ -182,7 +182,14 @@ export async function buildExhaustiveChecklist(
   )
     fail("CHECKLIST_STALE_REPORT");
 
-  const requirementIds = report.requirementIds as unknown[];
+  const requirementIds: string[] = [];
+  const seenRequirementIds = new Set<string>();
+  for (const id of report.requirementIds as unknown[]) {
+    if (typeof id !== "string" || !id || seenRequirementIds.has(id))
+      fail("CHECKLIST_INVALID_REPORT");
+    seenRequirementIds.add(id);
+    requirementIds.push(id);
+  }
   const requirements: ExhaustiveChecklist["items"] = [];
   const sourceByKey = new Map<string, ExhaustiveChecklist["sources"][number]>();
   const docs = new Map<
@@ -190,42 +197,57 @@ export async function buildExhaustiveChecklist(
     { name: string; state: string; warnings: string[]; error?: string }
   >();
   const dossier = await repo.readDossier(dossierId);
-  for (const id of (dossier.value.documentIds ?? []) as string[]) {
-    try {
-      const doc = await repo.read<Record<string, unknown>>("document", id);
-      docs.set(id, {
-        name:
-          typeof doc.value.name === "string"
-            ? doc.value.name
-            : "Documento sin nombre",
-        state:
-          typeof doc.value.state === "string" ? doc.value.state : "unknown",
-        warnings: Array.isArray(doc.value.warnings)
-          ? doc.value.warnings.filter((x): x is string => typeof x === "string")
-          : [],
-        ...(typeof doc.value.error === "string"
-          ? { error: doc.value.error }
-          : {}),
-      });
-    } catch (error) {
-      if (error instanceof DossierError && error.code === "NOT_FOUND")
-        fail("CHECKLIST_STALE_SOURCE");
-      throw error;
-    }
+  const listedDocumentIds = (dossier.value.documentIds ?? []) as unknown[];
+  if (
+    !Array.isArray(listedDocumentIds) ||
+    listedDocumentIds.some((id) => typeof id !== "string" || !id)
+  )
+    fail("CHECKLIST_STALE_SOURCE");
+  const descriptionId =
+    typeof dossier.value.descriptionId === "string" &&
+    dossier.value.descriptionId
+      ? dossier.value.descriptionId
+      : undefined;
+  const documentIds = [
+    ...new Set([
+      ...(listedDocumentIds as string[]),
+      ...(descriptionId ? [descriptionId] : []),
+    ]),
+  ];
+  const storedDocuments = await repo.readMany<Record<string, unknown>>(
+    "document",
+    documentIds,
+    { allowMissing: true },
+  );
+  const documentsById = new Map(
+    storedDocuments.map((document) => [document.id, document]),
+  );
+  for (const id of listedDocumentIds as string[]) {
+    const doc = documentsById.get(id);
+    if (!doc) fail("CHECKLIST_STALE_SOURCE");
+    docs.set(id, {
+      name:
+        typeof doc.value.name === "string"
+          ? doc.value.name
+          : "Documento sin nombre",
+      state: typeof doc.value.state === "string" ? doc.value.state : "unknown",
+      warnings: Array.isArray(doc.value.warnings)
+        ? doc.value.warnings.filter((x): x is string => typeof x === "string")
+        : [],
+      ...(typeof doc.value.error === "string"
+        ? { error: doc.value.error }
+        : {}),
+    });
   }
-  if (typeof dossier.value.descriptionId === "string") {
-    try {
-      const doc = await repo.read<Record<string, unknown>>(
-        "document",
-        dossier.value.descriptionId,
-      );
+  if (descriptionId) {
+    const doc = documentsById.get(descriptionId);
+    if (doc)
       docs.set(doc.id, {
         name:
           typeof doc.value.name === "string"
             ? doc.value.name
             : "Descripción oficial del proceso",
-        state:
-          typeof doc.value.state === "string" ? doc.value.state : "unknown",
+        state: typeof doc.value.state === "string" ? doc.value.state : "unknown",
         warnings: Array.isArray(doc.value.warnings)
           ? doc.value.warnings.filter((x): x is string => typeof x === "string")
           : [],
@@ -233,28 +255,21 @@ export async function buildExhaustiveChecklist(
           ? { error: doc.value.error }
           : {}),
       });
-    } catch (error) {
-      if (!(error instanceof DossierError) || error.code !== "NOT_FOUND")
-        throw error;
-    }
   }
 
-  for (let index = 0; index < requirementIds.length; index++) {
+  let storedRequirements;
+  try {
+    storedRequirements = await repo.readMany<Record<string, unknown>>(
+      "requirement",
+      requirementIds,
+    );
+  } catch (error) {
+    if (error instanceof DossierError && error.code === "NOT_FOUND")
+      fail("CHECKLIST_STALE_REQUIREMENT");
+    throw error;
+  }
+  for (const [index, stored] of storedRequirements.entries()) {
     const rawId = requirementIds[index];
-    if (
-      typeof rawId !== "string" ||
-      !rawId ||
-      requirementIds.indexOf(rawId) !== index
-    )
-      fail("CHECKLIST_INVALID_REPORT");
-    let stored;
-    try {
-      stored = await repo.read<Record<string, unknown>>("requirement", rawId);
-    } catch (error) {
-      if (error instanceof DossierError && error.code === "NOT_FOUND")
-        fail("CHECKLIST_STALE_REQUIREMENT");
-      throw error;
-    }
     const record = stored.value;
     if (
       record.dossierId !== dossierId ||

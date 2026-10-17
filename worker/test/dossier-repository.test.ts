@@ -110,6 +110,69 @@ describe("persisted owner scoped dossiers and jobs", () => {
     expect((await a.list("company")).length).toBe(1);
     expect((await b.list("company")).length).toBe(0);
   });
+  it("reads batches in request order without crossing owners and rejects missing rows", async () => {
+    await a.save("company", "batch-first", { name: "A first" }, 0);
+    await a.save("company", "batch-second", { name: "A second" }, 0);
+    await b.save("company", "batch-first", { name: "B first" }, 0);
+    await b.save("company", "only-b", { name: "B private" }, 0);
+
+    expect(
+      (await a.readMany<{ name: string }>("company", [
+        "batch-second",
+        "batch-first",
+      ])).map((record) => record.value.name),
+    ).toEqual(["A second", "A first"]);
+    expect(
+      (await b.readMany<{ name: string }>("company", ["batch-first"]))[0]
+        .value.name,
+    ).toBe("B first");
+    await expect(a.readMany("company", ["only-b"])).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      status: 404,
+    });
+  });
+
+  it("chunks bounded bulk reads and preserves every requested record", async () => {
+    const ids = Array.from({ length: 213 }, (_, index) => `batch-${index}`);
+    const documents = Array.from({ length: 11 }, (_, index) => `doc-${index}`);
+    const statements = [
+      ...ids.map((id) =>
+        env.DOSSIER_DB.prepare(
+          "INSERT INTO dossier_records(owner_id,kind,id,revision,value,updated_at) VALUES(?,?,?,1,?,?)",
+        ).bind("a", "company", id, JSON.stringify({ id }), now),
+      ),
+      ...documents.map((id) =>
+        env.DOSSIER_DB.prepare(
+          "INSERT INTO dossier_records(owner_id,kind,id,revision,value,updated_at) VALUES(?,?,?,1,?,?)",
+        ).bind("a", "document", id, JSON.stringify({ id }), now),
+      ),
+    ];
+    for (let offset = 0; offset < statements.length; offset += 80)
+      await env.DOSSIER_DB.batch(statements.slice(offset, offset + 80));
+
+    let queryCount = 0;
+    const db = new Proxy(env.DOSSIER_DB, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (property === "prepare")
+          return (...args: Parameters<D1Database["prepare"]>) => {
+            queryCount++;
+            return value.apply(target, args);
+          };
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const counted = new DossierRepository({ ...env, DOSSIER_DB: db }, a.context);
+
+    const records = await counted.readMany<{ id: string }>("company", ids);
+    const loadedDocuments = await counted.readMany<{ id: string }>(
+      "document",
+      documents,
+    );
+    expect(records.map((record) => record.value.id)).toEqual(ids);
+    expect(loadedDocuments.map((record) => record.value.id)).toEqual(documents);
+    expect(queryCount).toBe(4);
+  });
   it("supports outbox recovery, exclusive claims, renewal, retry and cancellation", async () => {
     const j = await a.enqueueJob({
       kind: "inventory",

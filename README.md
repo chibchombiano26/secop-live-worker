@@ -105,6 +105,9 @@ assert compliance or submit anything. Oversized source material and stale or
 missing reports fail explicitly; the download is an owner-, tender- and
 company-revision-bound private ticket that expires after ten minutes and is
 served with attachment, no-store and content-sniffing protections.
+Requirement and document records are loaded in bounded, owner-scoped batches
+so large dossiers avoid sequential database round trips. Requested order and
+all dossier/revision checks are preserved; missing required records fail explicitly.
 
 ### Extraction providers
 

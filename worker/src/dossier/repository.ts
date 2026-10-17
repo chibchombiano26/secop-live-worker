@@ -45,6 +45,8 @@ export type Job = {
 };
 const jobColumns =
   "id,kind,target_id AS targetId,state,attempts,lease,lease_until AS leaseUntil,progress,error";
+const READ_MANY_CHUNK_SIZE = 80;
+const MAX_READ_MANY_IDS = 5000;
 export class DossierRepository {
   readonly db: D1Database;
   readonly bucket: R2Bucket;
@@ -72,6 +74,54 @@ export class DossierRepository {
       }>();
     if (!row) throw new DossierError("NOT_FOUND", 404);
     return { ...row, value: JSON.parse(row.value) as T };
+  }
+  async readMany<T>(
+    kind: EntityKind,
+    ids: string[],
+    options: { allowMissing?: boolean } = {},
+  ): Promise<Stored<T>[]> {
+    if (
+      ids.length > MAX_READ_MANY_IDS ||
+      ids.some((id) => typeof id !== "string" || !id)
+    )
+      throw new DossierError("INVALID_BATCH", 400);
+    if (!ids.length) return [];
+
+    const requestedIds = [...new Set(ids)];
+    const found = new Map<string, Stored<T>>();
+    let size = 0;
+    for (
+      let offset = 0;
+      offset < requestedIds.length;
+      offset += READ_MANY_CHUNK_SIZE
+    ) {
+      const chunk = requestedIds.slice(offset, offset + READ_MANY_CHUNK_SIZE);
+      const placeholders = chunk.map(() => "?").join(",");
+      const rows = await this.db
+        .prepare(
+          `SELECT id,revision,value,updated_at AS updatedAt FROM dossier_records WHERE owner_id=? AND kind=? AND id IN (${placeholders})`,
+        )
+        .bind(this.context.ownerId, kind, ...chunk)
+        .all<{
+          id: string;
+          revision: number;
+          value: string;
+          updatedAt: number;
+        }>();
+      for (const row of rows.results) {
+        size += row.value.length;
+        if (size > 20000000)
+          throw new DossierError("CORPUS_CAPACITY_LIMIT", 413);
+        found.set(row.id, { ...row, value: JSON.parse(row.value) as T });
+      }
+    }
+
+    if (!options.allowMissing && requestedIds.some((id) => !found.has(id)))
+      throw new DossierError("NOT_FOUND", 404);
+    return ids.flatMap((id) => {
+      const record = found.get(id);
+      return record ? [record] : [];
+    });
   }
   async list<T>(
     kind: EntityKind,

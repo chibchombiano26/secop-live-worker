@@ -1,9 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { Miniflare, convertV4MiniflareOptions } from "miniflare";
+import { readFileSync } from "node:fs";
 import {
+  buildExhaustiveChecklist,
   checklistDeadlineStatus,
   renderExhaustiveChecklist,
   type ExhaustiveChecklist,
 } from "../src/dossier/checklist";
+import { DossierRepository } from "../src/dossier/repository";
 
 describe("exhaustive checklist rendering", () => {
   it("does not present extracted numeric rules as verified facts", () => {
@@ -103,5 +107,261 @@ describe("exhaustive checklist rendering", () => {
     expect(
       checklistDeadlineStatus("2026-04-30", Date.parse("2026-05-01T00:00:00Z")),
     ).toBe("past");
+  });
+});
+
+describe("exhaustive checklist repository loading", () => {
+  let mf: Miniflare;
+  let env: any;
+  let repo: DossierRepository;
+  const context = {
+    ownerId: "checklist-load-owner",
+    scopes: ["dossier:read"] as ("dossier:read" | "dossier:write" | "company:write" | "conversation:write")[],
+  };
+  const dossierId = "CO1.REQ.445566";
+  const reportId = `${dossierId}:7`;
+  const documentIds = Array.from({ length: 11 }, (_, index) => `doc-${index}`);
+  const requirementIds = Array.from(
+    { length: 213 },
+    (_, index) => `requirement-${index}`,
+  );
+  const sourceText = "The bidder must provide the requested evidence.";
+
+  beforeAll(async () => {
+    mf = new Miniflare(
+      convertV4MiniflareOptions({
+        modules: true,
+        script: 'export default {fetch(){return new Response("ok")}}',
+        d1Databases: ["DOSSIER_DB"],
+        r2Buckets: ["DOSSIER_FILES"],
+        compatibilityDate: "2026-10-01",
+      }),
+    );
+    env = {
+      DOSSIER_DB: await mf.getD1Database("DOSSIER_DB"),
+      DOSSIER_FILES: await mf.getR2Bucket("DOSSIER_FILES"),
+    };
+    await env.DOSSIER_DB.exec(
+      readFileSync(
+        new URL("../migrations/0001_dossiers.sql", import.meta.url),
+        "utf8",
+      ),
+    );
+    repo = new DossierRepository(env, context);
+    const statements: D1PreparedStatement[] = [];
+    const addRecord = (kind: string, id: string, value: unknown) =>
+      statements.push(
+        env.DOSSIER_DB.prepare(
+          "INSERT INTO dossier_records(owner_id,kind,id,revision,value,updated_at) VALUES(?,?,?,1,?,?)",
+        ).bind(context.ownerId, kind, id, JSON.stringify(value), Date.now()),
+      );
+    addRecord("dossier", dossierId, {
+      corpusRevision: 7,
+      documentIds,
+      descriptionId: "description-official",
+      coverage: { inventoryComplete: true },
+    });
+    for (const id of [...documentIds, "description-official"])
+      addRecord("document", id, { name: id, state: "ready" });
+    for (const id of requirementIds)
+      addRecord("requirement", id, {
+        dossierId,
+        corpusRevision: 7,
+        wording: `Condition in ${id}`,
+        category: "experience",
+        mandatory: true,
+        lot: null,
+        deadline: null,
+        rule: null,
+        citations: [
+          {
+            documentVersionId: documentIds[0],
+            page: 1,
+            excerpt: sourceText,
+          },
+        ],
+      });
+    for (let offset = 0; offset < statements.length; offset += 80)
+      await env.DOSSIER_DB.batch(statements.slice(offset, offset + 80));
+  });
+  afterAll(async () => mf?.dispose());
+
+  function countedRepository() {
+    const queries: string[] = [];
+    const db = new Proxy(env.DOSSIER_DB, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (property === "prepare")
+          return (...args: Parameters<D1Database["prepare"]>) => {
+            queries.push(String(args[0]));
+            return value.apply(target, args);
+          };
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    return {
+      repo: new DossierRepository({ ...env, DOSSIER_DB: db }, context),
+      queries: () => queries,
+    };
+  }
+
+  it("loads 213 requirements and the complete document inventory in four scoped queries", async () => {
+    const counted = countedRepository();
+    const chunk = {
+      documentVersionId: documentIds[0],
+      page: 1,
+      index: 0,
+      text: sourceText,
+    };
+    const checklist = await buildExhaustiveChecklist(
+      counted.repo,
+      dossierId,
+      7,
+      reportId,
+      { dossierId, corpusRevision: 7, requirementIds },
+      [chunk],
+      null,
+    );
+
+    expect(checklist.items).toHaveLength(213);
+    expect(checklist.items[0].requirementId).toBe(requirementIds[0]);
+    expect(checklist.items.at(-1)?.requirementId).toBe(requirementIds.at(-1));
+    expect(checklist.coverage.listedDocuments).toBe(12);
+    expect(checklist.sources[0].reference).toBe("S001");
+    expect(counted.queries().filter((sql) => sql.includes("id IN (")).length).toBe(
+      4,
+    );
+    expect(counted.queries()).toHaveLength(5);
+  });
+
+  it("rejects duplicate report IDs before reading any database rows", async () => {
+    const counted = countedRepository();
+    await expect(
+      buildExhaustiveChecklist(
+        counted.repo,
+        dossierId,
+        7,
+        reportId,
+        {
+          dossierId,
+          corpusRevision: 7,
+          requirementIds: [requirementIds[0], requirementIds[0]],
+        },
+        [
+          {
+            documentVersionId: documentIds[0],
+            page: 1,
+            index: 0,
+            text: sourceText,
+          },
+        ],
+        null,
+      ),
+    ).rejects.toMatchObject({ code: "CHECKLIST_INVALID_REPORT" });
+    expect(counted.queries()).toHaveLength(0);
+  });
+
+  it("keeps optional description documents optional and rejects missing listed documents", async () => {
+    const description = await repo.read("document", "description-official");
+    await env.DOSSIER_DB.prepare(
+      "DELETE FROM dossier_records WHERE owner_id=? AND kind='document' AND id=?",
+    )
+      .bind(context.ownerId, "description-official")
+      .run();
+    try {
+      const checklist = await buildExhaustiveChecklist(
+        repo,
+        dossierId,
+        7,
+        reportId,
+        { dossierId, corpusRevision: 7, requirementIds: [requirementIds[0]] },
+        [
+          {
+            documentVersionId: documentIds[0],
+            page: 1,
+            index: 0,
+            text: sourceText,
+          },
+        ],
+        null,
+      );
+      expect(checklist.coverage.listedDocuments).toBe(11);
+    } finally {
+      await repo.save("document", description.id, description.value, 0);
+    }
+
+    await env.DOSSIER_DB.prepare(
+      "DELETE FROM dossier_records WHERE owner_id=? AND kind='document' AND id=?",
+    )
+      .bind(context.ownerId, documentIds[10])
+      .run();
+    try {
+      await expect(
+        buildExhaustiveChecklist(
+          repo,
+          dossierId,
+          7,
+          reportId,
+          { dossierId, corpusRevision: 7, requirementIds: [requirementIds[0]] },
+          [
+            {
+              documentVersionId: documentIds[0],
+              page: 1,
+              index: 0,
+              text: sourceText,
+            },
+          ],
+          null,
+        ),
+      ).rejects.toMatchObject({ code: "CHECKLIST_STALE_SOURCE" });
+    } finally {
+      await repo.save(
+        "document",
+        documentIds[10],
+        { name: documentIds[10], state: "ready" },
+        0,
+      );
+    }
+  });
+
+  it("rejects requirements stored for another corpus revision", async () => {
+    const stored = await repo.read<Record<string, unknown>>(
+      "requirement",
+      requirementIds[50],
+    );
+    await repo.save(
+      "requirement",
+      requirementIds[50],
+      { ...stored.value, corpusRevision: 6 },
+      stored.revision,
+    );
+    try {
+      await expect(
+        buildExhaustiveChecklist(
+          repo,
+          dossierId,
+          7,
+          reportId,
+          { dossierId, corpusRevision: 7, requirementIds },
+          [
+            {
+              documentVersionId: documentIds[0],
+              page: 1,
+              index: 0,
+              text: sourceText,
+            },
+          ],
+          null,
+        ),
+      ).rejects.toMatchObject({ code: "CHECKLIST_STALE_REQUIREMENT" });
+    } finally {
+      const current = await repo.read("requirement", requirementIds[50]);
+      await repo.save(
+        "requirement",
+        requirementIds[50],
+        stored.value,
+        current.revision,
+      );
+    }
   });
 });
