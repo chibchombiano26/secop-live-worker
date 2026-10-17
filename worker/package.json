@@ -14,7 +14,7 @@
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^1.2.3",
     "@modelcontextprotocol/server": "^2.0.0",
-    "fflate": "^0.8.2",
+    "fflate": "^0.8.3",
     "pdfjs-dist": "6.4.299",
     "zod": "^4.0.0"
   },
