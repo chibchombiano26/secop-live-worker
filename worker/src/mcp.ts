@@ -12,10 +12,20 @@ import {
 } from "./socrata";
 import type { Env } from "./socrata";
 
+const filterValueSchema = z
+  .string()
+  .max(500)
+  .refine((value) => value.trim().length > 0, "Value must not be empty");
+const multiSelectSchema = z.union([
+  filterValueSchema,
+  z.array(filterValueSchema).min(1).max(20),
+]);
+
 export function createHandler(
   env: Env,
   privateContext?: unknown,
   origin = "http://localhost",
+  waitUntil?: (promise: Promise<unknown>) => void,
 ) {
   return createMcpHandler(() => {
     const server = new McpServer({ name: "secop-live", version: "1.0.0" });
@@ -24,13 +34,13 @@ export function createHandler(
       "buscar_licitaciones",
       {
         description:
-          "Search Colombia SECOP tenders live (full history + just published). Set vigentes=true to include only tenders with a future reception deadline and a nonterminal state, ordered by nearest deadline. Filter by estado (e.g. Publicado), entidad, modalidad, departamento, natural-language text. Use offset/next_offset to paginate.",
+          "Search Colombia SECOP tenders live (full history + just published). Set vigentes=true to include only tenders with a future reception deadline and a nonterminal state, ordered by nearest deadline. Each estado, entidad, modalidad, and departamento filter accepts one value or up to 20 values; values within one filter are ORed and separate filters are ANDed. Use offset/next_offset to paginate.",
         inputSchema: {
           q: z.string().optional(),
-          estado: z.string().optional(),
-          entidad: z.string().optional(),
-          modalidad: z.string().optional(),
-          departamento: z.string().optional(),
+          estado: multiSelectSchema.optional(),
+          entidad: multiSelectSchema.optional(),
+          modalidad: multiSelectSchema.optional(),
+          departamento: multiSelectSchema.optional(),
           vigentes: z.boolean().optional(),
           limit: z.number().optional(),
           offset: z.number().optional(),
@@ -139,6 +149,7 @@ export function createHandler(
                   env,
                   dataset: DATASETS.procesos,
                   socrataFetch,
+                  waitUntil,
                   stringSchema: () => z.string(),
                 }),
               ],

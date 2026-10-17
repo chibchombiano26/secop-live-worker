@@ -62,6 +62,11 @@ Public MCP compatibility includes `opciones_licitaciones` (complete cached catal
 and `documentos_licitacion` (verified tender/portfolio document association).
 The maintained adapters live in `worker/src/public/`; do not patch built bundles.
 
+The tender filters `estado`, `entidad`, `modalidad`, and `departamento` accept
+either one value or repeated query parameters (up to 20 values of 500 characters,
+ORed within a filter and ANDed across filters), for example
+`/licitaciones?estado=Publicado&estado=Abierto&departamento=Antioquia`.
+
 ## Private connection isolation
 
 Private capabilities require separate per-owner credentials, never public API keys.
@@ -183,3 +188,8 @@ by nearest deadline. Undated records are excluded. Active REST responses bypass
 the historical response cache so an elapsed deadline is not reused. Omit the
 flag or use false to retain full-history search. This scope does not establish
 that a bidder is eligible.
+
+Catalog MCP reads return a validated stored complete snapshot immediately when
+stale and refresh it through the request execution context in the background.
+The scheduled handler warms all three catalogs so users do not depend on cold
+Socrata group queries. Incomplete catalogs are never advertised as complete.

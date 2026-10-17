@@ -1,3 +1,22 @@
+const multiSelectParameter = (name: string) => ({
+  name,
+  in: "query",
+  description: "May be supplied once as a string or repeated up to 20 times for OR matching within this filter; separate filters are ANDed.",
+  style: "form",
+  explode: true,
+  schema: {
+    oneOf: [
+      { type: "string", minLength: 1, maxLength: 500 },
+      {
+        type: "array",
+        minItems: 1,
+        maxItems: 20,
+        items: { type: "string", minLength: 1, maxLength: 500 },
+      },
+    ],
+  },
+});
+
 export const OPENAPI = {
   openapi: "3.1.0",
   info: {
@@ -17,10 +36,10 @@ export const OPENAPI = {
       get: {
         summary: "Search tenders live",
         parameters: [
-          { name: "estado", in: "query", schema: { type: "string" } },
-          { name: "entidad", in: "query", schema: { type: "string" } },
-          { name: "modalidad", in: "query", schema: { type: "string" } },
-          { name: "departamento", in: "query", schema: { type: "string" } },
+          multiSelectParameter("estado"),
+          multiSelectParameter("entidad"),
+          multiSelectParameter("modalidad"),
+          multiSelectParameter("departamento"),
           { name: "q", in: "query", schema: { type: "string" } },
           { name: "desde", in: "query", schema: { type: "string" } },
           { name: "hasta", in: "query", schema: { type: "string" } },

@@ -13,12 +13,14 @@ import { authorizePrivateCode } from "./dossier/authorization";
 import { PRIVATE_SCOPES } from "./dossier/contracts";
 import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
 import { createHandler } from "./mcp";
+import { readSecopCatalog } from "./public/catalogs.mjs";
 import { OPENAPI, scalarHtml } from "./openapi";
 import {
   DATASETS,
   buildDocsQuery,
   buildProcesosQuery,
   page,
+  parseRepeatedFilter,
   socrataFetch,
   type Env,
 } from "./socrata";
@@ -234,16 +236,20 @@ async function handleRest(req: Request, env: Env): Promise<Response> {
 
   if (!isOpen(path) && !keyValid(env, requestKey(req))) return unauthorized();
   const q = (k: string) => url.searchParams.get(k) ?? undefined;
+  const multi = (k: string) => {
+    return parseRepeatedFilter(url.searchParams.getAll(k));
+  };
 
   if (path === "/licitaciones") {
     const limit = num(q("limit"), 20, 100);
     const offset = num(q("offset"), 0, 1_000_000);
-    const load = async () => {
-      const soql = buildProcesosQuery({
-        estado: q("estado"),
-        entidad: q("entidad"),
-        modalidad: q("modalidad"),
-        departamento: q("departamento"),
+    let soql: string;
+    try {
+      soql = buildProcesosQuery({
+        estado: multi("estado"),
+        entidad: multi("entidad"),
+        modalidad: multi("modalidad"),
+        departamento: multi("departamento"),
         q: q("q"),
         desde: q("desde"),
         hasta: q("hasta"),
@@ -251,6 +257,10 @@ async function handleRest(req: Request, env: Env): Promise<Response> {
         limit,
         offset,
       });
+    } catch {
+      return Response.json({ detail: "invalid filter values" }, { status: 400 });
+    }
+    const load = async () => {
       return pageUrls(
         req,
         page(await socrataFetch(DATASETS.procesos, soql, env), limit, offset),
@@ -309,6 +319,7 @@ function providerFor(req: Request) {
             env as unknown as Env,
             (ctx as ExecutionContext & { props?: unknown }).props,
             new URL(r.url).origin,
+            (promise) => ctx.waitUntil(promise),
           ) as unknown as { fetch: (x: Request) => Promise<Response> }
         ).fetch(r),
     },
@@ -343,6 +354,15 @@ export default {
         sweepOriginalRetention(env),
         sweepExpiredProposals(env),
         recoverTerminalExtractions(env),
+        ...["departamento", "entidad", "modalidad"].map((campo) =>
+          readSecopCatalog(campo, {
+            env,
+            dataset: DATASETS.procesos,
+            socrataFetch,
+            stringSchema: () => undefined,
+            waitUntil: (promise) => ctx.waitUntil(promise),
+          }).catch(() => undefined),
+        ),
       ]),
     );
   },

@@ -7,6 +7,7 @@ import {
   esc,
   like,
   page,
+  parseRepeatedFilter,
   wordsAny,
 } from "../src/socrata";
 
@@ -50,6 +51,33 @@ describe("soql", () => {
     expect(baseline).toBe(
       "SELECT *, :id  ORDER BY fecha_de_publicacion_del DESC, :id LIMIT 5 OFFSET 0",
     );
+  });
+  it("ORs repeated multi-select values per field and ANDs separate fields", () => {
+    const q = buildProcesosQuery({
+      estado: ["Publicado", "Abierto"],
+      entidad: ["Hospital", "Universidad"],
+    });
+    expect(q).toContain(
+      "(estado_del_procedimiento = 'Publicado' OR estado_del_procedimiento = 'Abierto')",
+    );
+    expect(q).toContain(
+      "(upper(entidad) like '%HOSPITAL%' OR upper(entidad) like '%UNIVERSIDAD%')",
+    );
+    expect(q).toContain(" AND ");
+    expect(parseRepeatedFilter([])).toBeUndefined();
+    expect(parseRepeatedFilter(["Publicado"])).toBe("Publicado");
+    expect(parseRepeatedFilter(["Publicado", "Abierto"])).toEqual([
+      "Publicado",
+      "Abierto",
+    ]);
+  });
+  it.each([
+    { estado: Array.from({ length: 21 }, (_, index) => `estado-${index}`) },
+    { entidad: [""] },
+    { entidad: "   " },
+    { modalidad: ["x".repeat(501)] },
+  ])("rejects empty, oversized, or too many filter values", (filters) => {
+    expect(() => buildProcesosQuery(filters)).toThrow("Invalid filter values");
   });
   it("docs query filters by words", () => {
     const q = buildDocsQuery("pliego", undefined, 10, 20);
