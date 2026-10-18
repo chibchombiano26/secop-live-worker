@@ -1,4 +1,5 @@
 import { z } from "zod/v4";
+import type { SavedExpertAuthority } from "./expert-policy";
 import { DossierError } from "./contracts";
 import { DossierRepository } from "./repository";
 import {
@@ -157,6 +158,7 @@ export type Conversation = {
   };
 };
 export type ChatInput = {
+  authority?: SavedExpertAuthority;
   dossierId: string;
   companyProfileId?: string;
   conversationId?: string;

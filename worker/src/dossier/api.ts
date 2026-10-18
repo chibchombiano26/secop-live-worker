@@ -2,6 +2,7 @@ import {
   assistantProviderSchema,
   runAssistantProvider,
 } from "./assistant-provider";
+import { sha256 } from "./downloads";
 import { consumeOwnerLimit } from "./limits";
 import { z } from "zod/v4";
 import {
@@ -593,11 +594,12 @@ export async function executePrivateOperation(
       if (a.companyProfileId) await repo.read("company", a.companyProfileId);
       if (a.conversationId) await repo.read("conversation", a.conversationId);
       const requestId = `chat.${a.idempotencyKey}`;
+      const saved = { kind: "chat_request", ...a, authority: { scopes: [...new Set(context.scopes)].sort(), requestHash: await sha256(JSON.stringify(a)) } };
       try {
         await repo.save(
           "message",
           requestId,
-          { kind: "chat_request", ...a },
+          saved,
           0,
         );
       } catch (e) {
@@ -606,7 +608,7 @@ export async function executePrivateOperation(
         const old = await repo.read<ChatInput>("message", requestId);
         if (
           JSON.stringify(old.value) !==
-          JSON.stringify({ kind: "chat_request", ...a })
+          JSON.stringify(saved)
         )
           throw new DossierError("IDEMPOTENCY_CONFLICT", 409);
       }
