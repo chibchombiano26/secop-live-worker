@@ -255,7 +255,7 @@ export async function extractRequirements(
   // Settle in-flight cache writes before yielding the lease on any failure.
   // Indexed results retain source order even when inference finishes out of order.
   await Promise.all(
-    Array.from({ length: Math.min(3, fragments.length) }, visitFragments),
+    Array.from({ length: Math.min(8, fragments.length) }, visitFragments),
   );
   if (failed) throw failure;
   return {

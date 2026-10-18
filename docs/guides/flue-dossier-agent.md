@@ -117,7 +117,7 @@ an offer, signs, sends communications or approves company evidence.
 
 ## Complete long-document extraction
 
-Requirement extraction visits every original evidence fragment with at most three
+Requirement extraction visits every original evidence fragment with at most eight
 independent model calls in flight. Indexed results retain source order, and each
 fragment keeps its exact document version, original page and citation validation.
 On failure or a model budget boundary, in-flight work settles and valid partial
@@ -129,7 +129,7 @@ If a model response truncates, extraction divides that source fragment into two
 smaller sections with a 200-character overlap. Original version and page metadata
 remain intact and no source text is dropped. The saved partition decision and
 each completed section are reused on resume. Recursive sections run sequentially
-within their existing worker, preserving the three-call ceiling. A fragment of
+within their existing worker, preserving the eight-call ceiling. A fragment of
 500 characters or less that still truncates fails explicitly; partial model
 output is never accepted as a complete requirements inventory.
 

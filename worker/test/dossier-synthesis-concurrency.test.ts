@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { extractRequirements } from "../src/dossier/synthesis";
 import type { EvidenceChunk } from "../src/dossier/extraction";
 import { DossierError } from "../src/dossier/contracts";
-const chunks: EvidenceChunk[] = Array.from({ length: 8 }, (_, i) => ({
+const chunks: EvidenceChunk[] = Array.from({ length: 12 }, (_, i) => ({
   documentVersionId: "long-tender",
   page: i + 1,
   index: i,
@@ -87,7 +87,7 @@ describe("bounded complete dossier extraction", () => {
     expect(result.requirements).toHaveLength(3);
     expect(values.size).toBe(1);
   });
-  it("analyzes independent source fragments concurrently with at most three calls and preserves original source order", async () => {
+  it("analyzes independent source fragments concurrently with at most eight calls and preserves original source order", async () => {
     let active = 0,
       maximum = 0;
     const visited: number[] = [];
@@ -98,15 +98,15 @@ describe("bounded complete dossier extraction", () => {
         active++;
         maximum = Math.max(maximum, active);
         visited.push(chunk.page!);
-        await delay((9 - chunk.page!) * 3);
+        await delay((13 - chunk.page!) * 3);
         active--;
         return part(chunk);
       },
     });
-    expect(maximum).toBe(3);
-    expect(visited.sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(maximum).toBe(8);
+    expect(visited.sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     expect(result.requirements.map((r) => r.citations[0].page)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
     ]);
   });
   it("settles in-flight results before yielding and resumes cached fragments without losing pages", async () => {
@@ -135,12 +135,12 @@ describe("bounded complete dossier extraction", () => {
     await expect(extractRequirements(chunks, model, cache)).rejects.toThrow(
       "temporary model interruption",
     );
-    expect(cached.size).toBe(2);
+    expect(cached.size).toBe(7);
     failing = false;
     visited.length = 0;
     const result = await extractRequirements(chunks, model, cache);
     expect(result.requirements.map((r) => r.citations[0].page)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
     ]);
     expect(visited).not.toContain(2);
     expect(visited).not.toContain(3);
