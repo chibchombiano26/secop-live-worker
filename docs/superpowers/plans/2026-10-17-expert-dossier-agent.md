@@ -57,11 +57,11 @@ Shared exported contracts:
 
 **Interfaces:** Produce `authorizeExpertActions(message: string, proposed: ExpertAction[], authority: SavedExpertAuthority | undefined): ExpertAction[]`. It accepts model proposals only when supported by the literal saved user request and appropriate original permissions; ambiguity permits review and asks for clarification instead of writing.
 
-- [ ] Write failing cases: advice allows review only; evaluation cannot imply plan/task/proposal generation; explicit save-plan plus `dossier:write` permits saving; insufficient permission, negation, quoted instructions and legacy request forbid writes. Client-supplied authority is rejected. Reusing an idempotency key with different scopes/request hash conflicts.
-- [ ] Run `npm --prefix worker test -- test/dossier-expert-policy.test.ts test/private-authorization.test.ts test/dossier-agent.test.ts`; verify expected assertion failures.
-- [ ] Implement strict authority capture in the existing chat admission path, separating internal metadata from public request parsing and idempotency comparison. Keep readStudyJob validating saved scope/lease and authorize each proposed effect through `authorizeExpertActions`.
-- [ ] Rerun the same command; require green, including old request compatibility.
-- [ ] Commit `feat: preserve scoped authority for expert dossier requests`.
+- [x] Write failing cases: advice allows review only; evaluation cannot imply plan/task/proposal generation; explicit save-plan plus `dossier:write` permits saving; insufficient permission, negation, quoted instructions and legacy request forbid writes. Client-supplied authority is rejected. Reusing an idempotency key with different scopes/request hash conflicts.
+- [x] Run `npm --prefix worker test -- test/dossier-expert-policy.test.ts test/private-authorization.test.ts test/dossier-agent.test.ts`; verify expected assertion failures.
+- [x] Implement strict authority capture in the existing chat admission path, separating internal metadata from public request parsing and idempotency comparison. Keep readStudyJob validating saved scope/lease and authorize each proposed effect through `authorizeExpertActions`.
+- [x] Rerun the same command; require green, including old request compatibility.
+- [x] Commit `feat: preserve scoped authority for expert dossier requests`.
 
 ### Task 2: Persist scoped preparation plans, memory and receipts
 
@@ -69,11 +69,11 @@ Shared exported contracts:
 
 **Interfaces:** Produce `readExpertState(repo, context: ExpertContext): Promise<{ memory: Stored<ExpertMemory> | null; plan: Stored<ExpertPlan> | null; stale: boolean }>` and `commitExpertEffect(repo, scope, input: { operationId: string; snapshot: ExpertSnapshot; expectedRevision: number; kind: 'plan' | 'memory'; value: ExpertPlan | ExpertMemory }): Promise<{ id: string; revision: number; duplicate: boolean }>`; type `repo` as DossierRepository and write `scope` as ExpertScope. Reads validate authenticated context without requiring a running job; writes require its live lease. Derive record keys from owner/dossier/company; validate scope, authority, snapshot and lease before mutation. Record the effect/receipt atomically using D1 conditional statements, not a read-then-write receipt gap.
 
-- [ ] Write failing real-D1 cases: reload recovers state; foreign owner/company has no access; stale corpus/company and lost lease reject writes; concurrent revisions conflict; retry returns the original receipt and does not reset edited plan items. User decisions remain assertions after corpus change.
-- [ ] Run `npm --prefix worker test -- test/dossier-expert-state.test.ts` and verify expected failures.
-- [ ] Implement typed records and bounded/paginated reads; fail clearly on capacity limits instead of truncating requirements. Preserve existing task/file records and require original permissions from Task 1.
-- [ ] Rerun state and repository tests; require green.
-- [ ] Commit `feat: persist scoped expert preparation state and effect receipts`.
+- [x] Write failing real-D1 cases: reload recovers state; foreign owner/company has no access; stale corpus/company and lost lease reject writes; concurrent revisions conflict; retry returns the original receipt and does not reset edited plan items. User decisions remain assertions after corpus change.
+- [x] Run `npm --prefix worker test -- test/dossier-expert-state.test.ts` and verify expected failures.
+- [x] Implement typed records and bounded/paginated reads; fail clearly on capacity limits instead of truncating requirements. Preserve existing task/file records and require original permissions from Task 1.
+- [x] Rerun state and repository tests; require green.
+- [x] Commit `feat: persist scoped expert preparation state and effect receipts`.
 
 ### Task 3: Expose evidence and company tools without implicit task writes
 
@@ -81,11 +81,11 @@ Shared exported contracts:
 
 **Interfaces:** Produce `createExpertTools(repo: DossierRepository, scope: ExpertScope, model: ModelProvider)` with `inspectDossier()`, `reviewRequirements()`, `evaluateCompany()`, `savePlan(plan: ExpertPlan, operationId: string, expectedRevision: number)` and `prepareProposal()`. Inputs never accept an owner, dossier, company or document selector. Retain the existing assessment API default, adding `assessCompany(..., options?: { createTasks?: boolean })`; expert evaluation passes `createTasks: false`. Existing task generation must insert missing tasks without overwriting user edits on rerun.
 
-- [ ] Write failing cases: complete review retains every requirement; missing company returns an explicit gap; expired/unreviewed evidence cannot establish compliance; evaluation creates zero tasks; assessment rerun preserves edited task owner/date/state; a foreign requirement or mismatched source reference is rejected.
-- [ ] Run `npm --prefix worker test -- test/dossier-expert-tools.test.ts test/company-assessment.test.ts test/dossier-checklist.test.ts`; verify expected failures.
-- [ ] Implement adapters using `buildExhaustiveChecklist`, current report/coverage, `assessCompany` and Task 2 state. `prepareProposal()` validates readiness and exposes the existing `proposal-docx` action; it does not claim to create/open an Office draft. Return explicit blockers when analysis or company evidence is missing.
-- [ ] Rerun the same tests; require green and no silent omission of pending/unavailable sources.
-- [ ] Commit `feat: expose evidence grounded expert dossier tools`.
+- [x] Write failing cases: complete review retains every requirement; missing company returns an explicit gap; expired/unreviewed evidence cannot establish compliance; evaluation creates zero tasks; assessment rerun preserves edited task owner/date/state; a foreign requirement or mismatched source reference is rejected.
+- [x] Run `npm --prefix worker test -- test/dossier-expert-tools.test.ts test/company-assessment.test.ts test/dossier-checklist.test.ts`; verify expected failures.
+- [x] Implement adapters using `buildExhaustiveChecklist`, current report/coverage, `assessCompany` and Task 2 state. `prepareProposal()` validates readiness and exposes the existing `proposal-docx` action; it does not claim to create/open an Office draft. Return explicit blockers when analysis or company evidence is missing.
+- [x] Rerun the same tests; require green and no silent omission of pending/unavailable sources.
+- [x] Commit `feat: expose evidence grounded expert dossier tools`.
 
 ### Task 4: Run the bounded expert workflow through Flue
 
@@ -93,12 +93,12 @@ Shared exported contracts:
 
 **Interfaces:** Produce `executeExpertStudy(repo: DossierRepository, job: Job, env: ProcessingEnv, adapters?: { model?: ModelProvider }): Promise<void>`. Reuse current chat completion semantics: persist the grounded turn and checkpoint `stage: 'answered'` only after requested effects and validated final answer are saved. Expose Task 3 adapters as actual scoped Flue tools; trusted intake enforces mandatory review and finalization. The model's free-form final acknowledgement is never authoritative.
 
-- [ ] Write failing scenarios with controlled model outputs: review-only, evaluate-company, save-plan and remember-decision routes; missing company; forged tool selectors; PDF prompt injection; no unauthorized writes; all requirement categories represented or explicitly qualified. A compound review/plan request produces sourced gaps and saved plan, not only the old checklist shortcut.
-- [ ] Run `npm --prefix worker test -- test/dossier-expert-study.test.ts test/dossier-agent.test.ts test/dossier-workflow.test.ts test/dossier-conversations.test.ts`; verify expected failures.
-- [ ] Implement at most 8 proposed tool steps per turn, no model-led recursive dispatch, and one bounded planning call per resumable segment. All planning/evidence calls use the existing daily/model-call budgets with checkpoints; the Flue coordinator must not add unmetered duplicate inference. Persist a validated plan before executing it. Resume saved steps/receipts on retry, respecting current lease and snapshot.
-- [ ] Add and run failure tests for budget pause between effects, duplicate delivery, cancellation, expired running job, company switch and amendment during processing. Require no duplicated effects, no stale success, and no paid replay of completed planning.
-- [ ] Add expert quality fixtures: budget versus quotation with page citation; ambiguous/conflicting deadlines; unsupported experience years; missing OCR pages. Require source validation and explicit uncertainty instead of invented facts or compliance.
-- [ ] Commit `feat: orchestrate bounded expert study through scoped Flue tools`.
+- [x] Write failing scenarios with controlled model outputs: review-only, evaluate-company, save-plan and remember-decision routes; missing company; forged tool selectors; PDF prompt injection; no unauthorized writes; all requirement categories represented or explicitly qualified. A compound review/plan request produces sourced gaps and saved plan, not only the old checklist shortcut.
+- [x] Run `npm --prefix worker test -- test/dossier-expert-study.test.ts test/dossier-agent.test.ts test/dossier-workflow.test.ts test/dossier-conversations.test.ts`; verify expected failures.
+- [x] Implement at most 8 proposed tool steps per turn, no model-led recursive dispatch, and one bounded planning call per resumable segment. All planning/evidence calls use the existing daily/model-call budgets with checkpoints; the Flue coordinator must not add unmetered duplicate inference. Persist a validated plan before executing it. Resume saved steps/receipts on retry, respecting current lease and snapshot.
+- [x] Add and run failure tests for budget pause between effects, duplicate delivery, cancellation, expired running job, company switch and amendment during processing. Require no duplicated effects, no stale success, and no paid replay of completed planning.
+- [x] Add expert quality fixtures: budget versus quotation with page citation; ambiguous/conflicting deadlines; unsupported experience years; missing OCR pages. Require source validation and explicit uncertainty instead of invented facts or compliance.
+- [x] Commit `feat: orchestrate bounded expert study through scoped Flue tools`.
 
 ### Task 5: Render saved expert results through existing Savia actions
 
@@ -106,11 +106,11 @@ Shared exported contracts:
 
 **Interfaces:** Extend internal saved ChatTurn with optional expert result/plan references. Keep public `PluginAssistantResponse` shape unchanged: text, citations, taskSuggestions, documentActions, pendingJobId and coverage. Existing stored turns remain readable. Use stable requirement IDs in task suggestions and preserve `proposal-docx` action identity/context for Office source-key reuse.
 
-- [ ] Write failing cases: load after refresh renders saved plan and decision context; missing company is visible; stale revisions disable actionable current claims; task suggestions retain validated citations; preparing a proposal exposes the existing action; no answer says an Office file or Savia task was created without its host action receipt.
-- [ ] Run `npm --prefix worker test -- test/dossier-assistant-provider.test.ts test/dossier-conversations.test.ts test/dossier-proposal.test.ts`; verify expected failures.
-- [ ] Implement result rendering without introducing a second chat or new Savia-specific backend routes. Existing generic task editor gathers responsible person/date; absent values remain unset. Office action retains its current source-key lookup and opens an existing draft before generating another.
-- [ ] Run the same command and existing Savia generic action tests in the SECOP plugin worktree: `pnpm --filter @savia/admin exec vitest run src/features/assistant/assistant-document-action.test.tsx src/features/assistant/assistant-task-action.test.tsx`. Require existing draft/manual-edit protection to stay green; do not edit unrelated Savia working-tree changes.
-- [ ] Commit `feat: surface expert preparation plans in the existing assistant`.
+- [x] Write failing cases: load after refresh renders saved plan and decision context; missing company is visible; stale revisions disable actionable current claims; task suggestions retain validated citations; preparing a proposal exposes the existing action; no answer says an Office file or Savia task was created without its host action receipt.
+- [x] Run `npm --prefix worker test -- test/dossier-assistant-provider.test.ts test/dossier-conversations.test.ts test/dossier-proposal.test.ts`; verify expected failures.
+- [x] Implement result rendering without introducing a second chat or new Savia-specific backend routes. Existing generic task editor gathers responsible person/date; absent values remain unset. Office action retains its current source-key lookup and opens an existing draft before generating another.
+- [x] Run the same command and existing Savia generic action tests in the SECOP plugin worktree: `pnpm --filter @savia/admin exec vitest run src/features/assistant/assistant-document-action.test.tsx src/features/assistant/assistant-task-action.test.tsx`. Require existing draft/manual-edit protection to stay green; do not edit unrelated Savia working-tree changes.
+- [x] Commit `feat: surface expert preparation plans in the existing assistant`.
 
 ### Task 6: Diagnose and restore the Preview plugin loading path
 
@@ -133,3 +133,7 @@ Shared exported contracts:
 - [ ] Deploy via existing SECOP `infra:plan`/`infra:deploy`/`infra:check` flow, preserving resource IDs, secrets and records; OCR build remains unchanged when its source fingerprint is unchanged.
 - [ ] In Preview on CO1.REQ.10391118: request an exhaustive review and saved preparation plan; verify source PDF/page, a follow-up, refresh recovery, a task action and existing draft opening. Use a real selected company only if present; explicitly test missing-company behavior otherwise. Do not invent company evidence or claim positive eligibility.
 - [ ] Record backend and UI results separately, usage/latency counts without sensitive contents, remaining gaps and any human verification required. Update the guide with capabilities, limits and supported example requests. No completion claim until acceptance evidence supports it.
+
+## Execution evidence
+
+Backend published and verified: saved dossier CO1.REQ.10391118 produced a durable plan with 213 requirements and 149 source references; job succeeded. No company profile exists in the connected space, so company fulfillment remains unverified. 218 Worker tests and 21 existing host action tests pass. Preview UI acceptance remains blocked by a fresh shell navigation stalled before a completed response; the authenticated host times out. This is not recorded as successful UI validation.

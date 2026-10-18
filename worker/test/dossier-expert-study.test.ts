@@ -266,3 +266,42 @@ it("revalidates expiring company support when resuming a completed assessment", 
     await f.mf.dispose();
   }
 }, 20000);
+it("recovers explicit user decisions as assertions without approving company facts", async () => {
+  const f = await expertFixture(
+    "Recuerda que revisaremos todos los requisitos antes de participar",
+  );
+  try {
+    const model = {
+      id: "test",
+      generate: async () => ({ actions: ["review", "remember_decision"] }),
+    };
+    await executeExpertStudy(f.repo, f.job, f.env, { model });
+    const state = await readExpertState(
+      new DossierRepository(f.env, f.repo.context),
+      f.scope,
+    );
+    expect(state.memory?.value.decisions).toEqual([
+      {
+        text: "Recuerda que revisaremos todos los requisitos antes de participar",
+        originatingTurnId: "request",
+      },
+    ]);
+    expect(
+      (await f.repo.read<any>("company", "company-a")).value.facts,
+    ).toEqual([]);
+    expect(
+      (
+        await readExpertState(f.repo, {
+          ...f.scope,
+          companyProfileId: undefined,
+        })
+      ).memory,
+    ).toBeNull();
+    await executeExpertStudy(f.repo, await f.repo.readJob(f.job.id), f.env, {
+      model,
+    });
+    expect((await readExpertState(f.repo, f.scope)).memory?.revision).toBe(1);
+  } finally {
+    await f.mf.dispose();
+  }
+}, 20000);
