@@ -454,7 +454,9 @@ export function renderExhaustiveChecklist(
   const pastSubmission = checklist.items.filter(
     (item) =>
       item.deadlineStatus === "past" &&
-      /presentaci[oó]n|propuestas|ofertas/i.test(item.wording),
+      /(?:presentacion|recepcion|radicacion|entrega|cierre|presentar|recibir|radicar|entregar)(?:\s+(?:de|del|la|el|las|los|para|sus|su|una|unas)){0,4}\s+(?:ofertas?|propuestas?)\b/iu.test(
+        item.wording.normalize("NFD").replace(/[\u0300-\u036f]/g, ""),
+      ),
   );
   const lines = [
     ...(pastSubmission.length

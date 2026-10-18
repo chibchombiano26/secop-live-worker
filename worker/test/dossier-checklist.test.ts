@@ -94,6 +94,24 @@ describe("exhaustive checklist rendering", () => {
     expect(compact).toContain(
       "No se debe asumir que este proceso recibe ofertas",
     );
+    for (const wording of [
+      "Presentación de observaciones al pliego hasta el 14 de octubre",
+      "Recepción de observaciones sobre las propuestas recibidas",
+      "Entrega de respuestas a las observaciones a las ofertas",
+    ]) {
+      checklist.items[0].wording = wording;
+      const observations = renderExhaustiveChecklist(checklist);
+      expect(observations).not.toContain(
+        "## Plazo de presentación transcurrido",
+      );
+      expect(observations).toContain(wording);
+      expect(observations).toContain("30 de abril de 2026");
+    }
+    checklist.items[0].wording =
+      "Fecha límite para la recepción de las propuestas";
+    expect(renderExhaustiveChecklist(checklist)).toMatch(
+      /^## Plazo de presentación transcurrido/,
+    );
   });
 
   it("parses Spanish deadlines through the end of the stated Bogota day", () => {

@@ -88,6 +88,10 @@ wording and extracted classifications; it does not turn those classifications in
 verified eligibility decisions. Pending/OCR review and company evidence gaps are
 shown before the list. Oversized output fails explicitly without clipping.
 
+Past dates remain visible for every extracted deadline. The offer-closing banner
+requires an explicit submission/receipt/closing phrase tied to offers or proposals;
+observation, clarification and response deadlines do not establish offer closure.
+
 Focused questions continue to use scoped hybrid retrieval. The complete checklist
 is an inventory of the saved extraction, not proof that OCR or model extraction
 found every obligation in the originals. Review the sources before applying.

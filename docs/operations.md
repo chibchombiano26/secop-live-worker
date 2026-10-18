@@ -83,9 +83,11 @@ processing change; never remove bounds or truncate documents silently.
 
 ## Verification and release
 
-Run `npm ci`, `npm test`, `npm run typecheck`, `npm run bundle` in worker. Integration
-tests use Miniflare D1/R2, plus fixture extraction/model adapters; they are not
-proof of production model quality. Run OpenTofu fmt/validate after backend-free
+Run `npm ci`, `npm test -- --maxWorkers=1`, `npm run typecheck`, `npm run bundle`
+in worker. CI runs the Miniflare-backed worker suite with one Vitest worker to
+avoid process contention between integration tests. Integration tests use Miniflare
+D1/R2, plus fixture extraction/model adapters; they are not proof of production
+model quality. Run OpenTofu fmt/validate after backend-free
 init. Verify real extraction and model calls on the isolated service before
 promoting a compatible bundle to the existing SECOP endpoint.
 

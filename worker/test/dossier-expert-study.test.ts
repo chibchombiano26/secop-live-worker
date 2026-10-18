@@ -101,7 +101,7 @@ it("resumes a budget pause without repeating the paid planning call", async () =
   } finally {
     await f.mf.dispose();
   }
-});
+}, 15_000);
 it("rejects an amendment arriving during assessment before saving a plan", async () => {
   const f = await expertFixture(undefined, true, true);
   try {
