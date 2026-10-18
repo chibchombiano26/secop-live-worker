@@ -125,6 +125,13 @@ cache entries persist before the job yields; the next attempt reuses them. This
 does not increase the configured per-job or owner daily model budget. The joint
 review still consumes the full extracted requirement set.
 
+The joint comparison plan also executes at most eight independent review groups
+concurrently, without removing any planned requirement pairs. Completed groups
+are cached before progress is acknowledged. On failure all in-flight work settles
+before resume, and results are merged in original plan order so completion timing
+cannot change candidate selection. Candidate evidence verification remains a
+separate step with the existing citation and amendment rules.
+
 If a model response truncates, extraction divides that source fragment into two
 smaller sections with a 200-character overlap. Original version and page metadata
 remain intact and no source text is dropped. The saved partition decision and

@@ -296,13 +296,16 @@ export async function reviewJointRequirements(
   const summaries = new Set<string>();
   const candidates = new Map<string, Candidate>();
   let reviewRequests = 0;
-  for (let groupIndex = 0; groupIndex < plan.groups.length; groupIndex++) {
+  const results: z.infer<typeof reviewSchema>[] = [];
+  let completed = 0;
+  let progressWrites = Promise.resolve();
+  await checkpoint?.({
+    phase: "joint_review",
+    reviewGroupsCompleted: 0,
+    reviewGroupsTotal: plan.groups.length,
+  });
+  async function reviewGroup(groupIndex: number) {
     const group = plan.groups[groupIndex];
-    await checkpoint?.({
-      phase: "joint_review",
-      reviewGroupsCompleted: groupIndex,
-      reviewGroupsTotal: plan.groups.length,
-    });
     const input = reviewInput(requirements, group, index, coverage);
     const key = await sha256(
       `joint-review:v1:${model.id}:${JSON.stringify(input)}`,
@@ -329,6 +332,42 @@ export async function reviewJointRequirements(
       await cache.put(key, result);
       reviewRequests++;
     }
+    results[groupIndex] = result;
+    const count = ++completed;
+    progressWrites = progressWrites.then(async () => {
+      await checkpoint?.({
+        phase: "joint_review",
+        reviewGroupsCompleted: count,
+        reviewGroupsTotal: plan.groups.length,
+      });
+    });
+    await progressWrites;
+  }
+  let nextGroup = 0;
+  let failed = false;
+  let failure: unknown;
+  async function visitGroups() {
+    while (!failed && nextGroup < plan.groups.length) {
+      const groupIndex = nextGroup++;
+      try {
+        await reviewGroup(groupIndex);
+      } catch (error) {
+        if (!failed) {
+          failed = true;
+          failure = error;
+        }
+      }
+    }
+  }
+  // Settle all in-flight model/cache work before yielding, then merge in the
+  // original plan order so completion timing cannot select different candidates.
+  await Promise.all(
+    Array.from({ length: Math.min(8, plan.groups.length) }, visitGroups),
+  );
+  if (failed) throw failure;
+  for (let groupIndex = 0; groupIndex < plan.groups.length; groupIndex++) {
+    const group = plan.groups[groupIndex];
+    const result = results[groupIndex];
     if (group.summaryAllowed && result.summary.trim())
       summaries.add(result.summary.trim());
     for (const candidate of result.candidates) {
@@ -344,11 +383,6 @@ export async function reviewJointRequirements(
           : `${candidate.right}:${candidate.left}:${candidate.kind}`;
       if (!candidates.has(pair)) candidates.set(pair, candidate);
     }
-    await checkpoint?.({
-      phase: "joint_review",
-      reviewGroupsCompleted: groupIndex + 1,
-      reviewGroupsTotal: plan.groups.length,
-    });
   }
   const amendments: JointAmendment[] = [];
   const conflicts: string[] = [];
