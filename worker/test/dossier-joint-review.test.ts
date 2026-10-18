@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { reviewJointRequirements } from "../src/dossier/joint-review";
 import type { Requirement } from "../src/dossier/synthesis";
 
@@ -286,6 +286,131 @@ describe("reviewJointRequirements", () => {
     expect(store.values.size).toBe(1);
   });
 
+  it("logs only schema paths and issue types for uncached invalid group output", async () => {
+    const sensitiveValue = "private model response text";
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args) => {
+      logs.push(args.join(" "));
+    });
+    try {
+      await expect(
+        reviewJointRequirements(
+          [req("A", "doc-a")],
+          {
+            id: "invalid-group-schema",
+            generate: async () => ({
+              summary: `${sensitiveValue}${"x".repeat(6_000)}`,
+              candidates: [],
+            }),
+          },
+          {},
+          cache(),
+        ),
+      ).rejects.toMatchObject({ code: "MODEL_INVALID_OUTPUT" });
+      expect(logs).toHaveLength(1);
+      const event = JSON.parse(logs[0]);
+      expect(event).toMatchObject({
+        event: "joint_review_invalid_output",
+        groupIndex: 0,
+        category: "schema",
+      });
+      expect(event.issues).toEqual([
+        { path: ["summary"], type: expect.any(String) },
+      ]);
+      expect(logs[0]).not.toContain(sensitiveValue);
+      expect(logs[0]).not.toContain("message");
+      expect(logs[0]).not.toContain("value");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("logs candidate scope numbers without requirement or model text", async () => {
+    const sensitiveValue = "do not log this candidate explanation";
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args) => {
+      logs.push(args.join(" "));
+    });
+    try {
+      await expect(
+        reviewJointRequirements(
+          [req("A", "doc-a"), req("B", "doc-b")],
+          {
+            id: "invalid-group-scope",
+            generate: async () => ({
+              summary: "Revisión.",
+              candidates: [
+                {
+                  left: 0,
+                  right: 99,
+                  kind: "conflict",
+                  reason: sensitiveValue,
+                },
+              ],
+            }),
+          },
+          {},
+          cache(),
+        ),
+      ).rejects.toMatchObject({ code: "MODEL_INVALID_OUTPUT" });
+      expect(logs).toHaveLength(1);
+      expect(JSON.parse(logs[0])).toEqual({
+        event: "joint_review_invalid_output",
+        groupIndex: 0,
+        category: "candidate_scope",
+        left: 0,
+        right: 99,
+        allowedIndexMin: 0,
+        allowedIndexMax: 1,
+        allowedIndexCount: 2,
+      });
+      expect(logs[0]).not.toContain(sensitiveValue);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("classifies a self-comparison separately from an out-of-scope candidate", async () => {
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args) => {
+      logs.push(args.join(" "));
+    });
+    try {
+      await expect(
+        reviewJointRequirements(
+          [req("A", "doc-a")],
+          {
+            id: "invalid-group-self-pair",
+            generate: async () => ({
+              summary: "Revisión.",
+              candidates: [
+                {
+                  left: 0,
+                  right: 0,
+                  kind: "conflict",
+                  reason: "Difieren.",
+                },
+              ],
+            }),
+          },
+          {},
+          cache(),
+        ),
+      ).rejects.toMatchObject({ code: "MODEL_INVALID_OUTPUT" });
+      expect(JSON.parse(logs[0])).toMatchObject({
+        event: "joint_review_invalid_output",
+        category: "candidate_self",
+        left: 0,
+        right: 0,
+        allowedIndexMin: 0,
+        allowedIndexMax: 0,
+        allowedIndexCount: 1,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("counts completed but unconfirmed candidates separately from confirmed candidates", async () => {
     const result = await reviewJointRequirements(
       [req("A", "doc-a"), req("B", "doc-b")],
@@ -317,6 +442,127 @@ describe("reviewJointRequirements", () => {
     expect(result.candidateReviews[0].decision).toBe("unconfirmed");
     expect(result.metrics.verifiedCandidates).toBe(0);
     expect(result.metrics.completedVerifications).toBe(1);
+  });
+
+  it("verifies candidates with at most eight workers and merges in candidate order", async () => {
+    const requirements = Array.from({ length: 11 }, (_, i) =>
+      req(`Requisito ${i}`, `doc-${i}`),
+    );
+    const candidates = Array.from({ length: 10 }, (_, i) => ({
+      left: i,
+      right: (i + 1) % requirements.length,
+      kind: "conflict" as const,
+      reason: `Propuesta ${i}`,
+    }));
+    let activeVerifications = 0;
+    let maximumVerifications = 0;
+    let activeReviews = 0;
+    let phaseOverlap = false;
+    const progress: number[] = [];
+    const result = await reviewJointRequirements(
+      requirements,
+      {
+        id: "parallel-candidate-verification",
+        generate: async (input: any) => {
+          if (input.purpose === "joint_requirement_review") {
+            activeReviews++;
+            if (activeVerifications > 0) phaseOverlap = true;
+            const value = {
+              summary: "Revisión completa.",
+              candidates,
+            };
+            activeReviews--;
+            return value;
+          }
+          activeVerifications++;
+          maximumVerifications = Math.max(
+            maximumVerifications,
+            activeVerifications,
+          );
+          if (activeReviews > 0) phaseOverlap = true;
+          const pairIndex = input.context.candidate.left;
+          await new Promise((resolve) =>
+            setTimeout(resolve, (candidates.length - pairIndex) * 2),
+          );
+          activeVerifications--;
+          return {
+            decision: "unconfirmed",
+            reason: `Pendiente ${pairIndex}`,
+            citationIds: [],
+          };
+        },
+      },
+      {},
+      cache(),
+      async (update) => {
+        if (update.phase === "joint_verification")
+          progress.push(update.candidatesCompleted as number);
+      },
+    );
+
+    expect(maximumVerifications).toBe(8);
+    expect(phaseOverlap).toBe(false);
+    expect(result.candidateReviews.map(({ left, right }) => [left, right])).toEqual(
+      candidates.map(({ left, right }) => [left, right]),
+    );
+    expect(result.candidateReviews.map(({ reason }) => reason)).toEqual(
+      candidates.map((_, index) => `Pendiente ${index}`),
+    );
+    expect(progress).toEqual(Array.from({ length: 11 }, (_, index) => index));
+  });
+
+  it("settles candidate verification caches after failure and reuses successes", async () => {
+    const requirements = Array.from({ length: 11 }, (_, i) =>
+      req(`Requisito ${i}`, `doc-${i}`),
+    );
+    const candidates = Array.from({ length: 10 }, (_, i) => ({
+      left: i,
+      right: i + 1,
+      kind: "conflict" as const,
+      reason: `Propuesta ${i}`,
+    }));
+    const store = cache();
+    const successfulPairs = new Set<number>();
+    const repeatedSuccessfulPairs: number[] = [];
+    let failFirstPair = true;
+    let verificationCalls = 0;
+    const model = {
+      id: "parallel-verification-resume",
+      generate: async (input: any) => {
+        if (input.purpose === "joint_requirement_review")
+          return { summary: "Revisión completa.", candidates };
+        const left = input.context.candidate.left as number;
+        verificationCalls++;
+        if (left === 0 && failFirstPair) {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          throw new Error("temporary verification failure");
+        }
+        if (successfulPairs.has(left)) repeatedSuccessfulPairs.push(left);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        successfulPairs.add(left);
+        return {
+          decision: "unconfirmed",
+          reason: `Pendiente ${left}`,
+          citationIds: [],
+        };
+      },
+    };
+
+    await expect(
+      reviewJointRequirements(requirements, model, {}, store),
+    ).rejects.toThrow("temporary verification failure");
+    expect(verificationCalls).toBe(8);
+    expect(successfulPairs.size).toBe(7);
+    expect(store.values.size).toBe(8); // One group and seven verification results.
+
+    failFirstPair = false;
+    const resumed = await reviewJointRequirements(requirements, model, {}, store);
+    expect(verificationCalls).toBe(11);
+    expect(successfulPairs.size).toBe(10);
+    expect(repeatedSuccessfulPairs).toEqual([]);
+    expect(resumed.candidateReviews.map(({ left }) => left)).toEqual(
+      candidates.map(({ left }) => left),
+    );
   });
 
   it("resumes cached completed review groups without repeating model calls", async () => {
