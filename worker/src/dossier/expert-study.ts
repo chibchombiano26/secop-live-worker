@@ -1,3 +1,4 @@
+import type { ExhaustiveChecklist } from "./checklist";
 import { z } from "zod/v4";
 import { DossierError } from "./contracts";
 import { readStudyJob } from "./agent-scope";
@@ -25,6 +26,7 @@ export type ExpertTurnResult = {
   planId?: string;
   memoryId?: string;
   proposalReady?: boolean;
+  companySources?: ExhaustiveChecklist["sources"];
 };
 const executionSchema = z
   .object({
@@ -179,6 +181,7 @@ export async function executeExpertStudy(
   )
     throw new DossierError("EXPERT_SNAPSHOT_CHANGED", 409);
   const state = await readExpertState(repo, scope);
+  const companySources: ExhaustiveChecklist["sources"] = [];
   const lines = [
     "## Preparación de la licitación",
     `${checklist.items.length} requisitos revisados con sus fuentes. ${checklist.coverage.reviewRequiredDocuments} documentos requieren revisión de extracción; ${checklist.coverage.unavailableDocuments} no están disponibles.`,
@@ -197,8 +200,33 @@ export async function executeExpertStudy(
       const req = checklist.items.find(
         (r) => r.requirementId === finding.requirementId,
       );
+      const companyRefs: string[] = [];
+      for (const citation of finding.companyCitations) {
+        let source = companySources.find(
+          (c) =>
+            c.documentVersionId === citation.documentVersionId &&
+            c.page === citation.page &&
+            c.section === citation.section &&
+            c.excerpt === citation.excerpt,
+        );
+        if (!source) {
+          const doc = await repo.read<{ dossierId: string; name: string }>(
+            "document",
+            citation.documentVersionId,
+          );
+          if (doc.value.dossierId !== `company:${scope.companyProfileId}`)
+            throw new DossierError("AGENT_CONTEXT_MISMATCH", 403);
+          source = {
+            ...citation,
+            reference: `S${String(checklist.sources.length + companySources.length + 1).padStart(3, "0")}`,
+            documentName: doc.value.name,
+          };
+          companySources.push(source);
+        }
+        companyRefs.push(`[${source.reference}]`);
+      }
       lines.push(
-        `- ${req?.reference ?? finding.requirementId}: ${finding.missing.join("; ") || finding.reason} ${(req?.citations ?? []).map((c) => `[${c.sourceRef}]`).join(" ")}`,
+        `- ${req?.reference ?? finding.requirementId}: ${finding.missing.join("; ") || finding.reason} ${(req?.citations ?? []).map((c) => `[${c.sourceRef}]`).join(" ")} ${companyRefs.join(" ")}`,
       );
     }
   }
@@ -222,6 +250,7 @@ export async function executeExpertStudy(
     );
   const expert: ExpertTurnResult = {
     summary: lines.join("\n\n"),
+    ...(companySources.length ? { companySources } : {}),
     ...(execution.planId ? { planId: execution.planId } : {}),
     ...(execution.memoryId ? { memoryId: execution.memoryId } : {}),
     ...(execution.proposalReady ? { proposalReady: true } : {}),

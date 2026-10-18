@@ -181,7 +181,7 @@ export async function commitExpertEffect(
   // Both statements run atomically in D1. The first reserves only if lease,
   // snapshot and optimistic state revision still match; the second consumes it.
   const guard =
-    "EXISTS(SELECT 1 FROM dossier_jobs WHERE owner_id=? AND id=? AND state='running' AND lease=? AND lease_until>?) AND EXISTS(SELECT 1 FROM dossier_records WHERE owner_id=? AND kind='dossier' AND id=? AND json_extract(value,'$.corpusRevision')=? AND json_extract(value,'$.reportId')=?) AND (? IS NULL OR EXISTS(SELECT 1 FROM dossier_records WHERE owner_id=? AND kind='company' AND id=? AND revision=?))";
+    "EXISTS(SELECT 1 FROM dossier_jobs WHERE owner_id=? AND id=? AND state='running' AND lease=? AND lease_until>?) AND EXISTS(SELECT 1 FROM dossier_records WHERE owner_id=? AND kind='dossier' AND id=? AND json_extract(value,'$.corpusRevision')=? AND json_extract(value,'$.reportId')=? AND COALESCE(json_extract(value,'$.needsSynthesis'),0)=0) AND (? IS NULL OR EXISTS(SELECT 1 FROM dossier_records WHERE owner_id=? AND kind='company' AND id=? AND revision=?))";
   const guardArgs = [
     scope.ownerId,
     scope.jobId,
