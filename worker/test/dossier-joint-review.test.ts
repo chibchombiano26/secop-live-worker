@@ -221,6 +221,7 @@ describe("reviewJointRequirements", () => {
       req(`Requisito final ${i}: ${String(i).repeat(3_750)}`, `doc-${i}`),
     );
     const observed = new Set<string>();
+    const reviewInputs: any[] = [];
     let active = 0, maximum = 0;
     const model = {
       id: "pair-coverage-model",
@@ -230,6 +231,7 @@ describe("reviewJointRequirements", () => {
         await new Promise(resolve => setTimeout(resolve, 10));
         active--;
         if (input.purpose === "joint_requirement_review") {
+          reviewInputs.push(input);
           const indices = input.context.requirements.map(
             (row: any[]) => row[0],
           );
@@ -254,6 +256,51 @@ describe("reviewJointRequirements", () => {
     expect(observed.size).toBe((14 * 13) / 2);
     expect(observed.has("0:13")).toBe(true);
     expect(observed.has("12:13")).toBe(true);
+    const allIndices = requirements.map((_, index) => index);
+    const canUse = (index: number, bounds: any) =>
+      Number.isInteger(bounds.minimum) &&
+      Number.isInteger(bounds.maximum) &&
+      index >= bounds.minimum &&
+      index <= bounds.maximum;
+    for (const input of reviewInputs) {
+      const indices = input.context.requirements.map((row: any[]) => row[0]);
+      const properties = input.outputSchema.properties.candidates.items.properties;
+      const left = properties.left;
+      const right = properties.right;
+      expect(Number.isInteger(left.minimum)).toBe(true);
+      expect(Number.isInteger(left.maximum)).toBe(true);
+      expect(Number.isInteger(right.minimum)).toBe(true);
+      expect(Number.isInteger(right.maximum)).toBe(true);
+      for (const index of allIndices) {
+        if (canUse(index, left) || canUse(index, right))
+          expect(indices).toContain(index);
+      }
+      const overlap =
+        left.minimum <= right.maximum && right.minimum <= left.maximum;
+      const sameBounds =
+        left.minimum === right.minimum && left.maximum === right.maximum;
+      expect(overlap === sameBounds).toBe(true);
+    }
+    for (let left = 0; left < allIndices.length; left++) {
+      for (let right = left + 1; right < allIndices.length; right++) {
+        const reachable = reviewInputs.some((input) => {
+          const indices = input.context.requirements.map(
+            (row: any[]) => row[0],
+          );
+          const properties =
+            input.outputSchema.properties.candidates.items.properties;
+          return (
+            indices.includes(left) &&
+            indices.includes(right) &&
+            ((canUse(left, properties.left) &&
+              canUse(right, properties.right)) ||
+              (canUse(right, properties.left) &&
+                canUse(left, properties.right)))
+          );
+        });
+        expect(reachable).toBe(true);
+      }
+    }
   });
 
   it("rejects invented citation IDs and never caches malformed model output", async () => {
