@@ -124,3 +124,9 @@ On failure or a model budget boundary, in-flight work settles and valid partial
 cache entries persist before the job yields; the next attempt reuses them. This
 does not increase the configured per-job or owner daily model budget. The joint
 review still consumes the full extracted requirement set.
+
+When the selected company has no extracted supporting evidence, every applicable
+requirement is marked `insufficient_evidence` deterministically, without a model
+call per requirement. Declared profile capabilities never become verified
+compliance, and all requirement IDs remain in the assessment. Selected-lot
+applicability checks still apply.

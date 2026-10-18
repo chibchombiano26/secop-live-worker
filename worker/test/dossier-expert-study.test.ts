@@ -19,7 +19,7 @@ function expertModel() {
   };
 }
 it("evaluates and saves a sourced plan with an authoritative answer", async () => {
-  const f = await expertFixture();
+  const f = await expertFixture(undefined, true, true);
   try {
     await executeExpertStudy(f.repo, f.job, f.env, { model: expertModel() });
     const saved = await readExpertState(f.repo, f.scope);
@@ -67,7 +67,7 @@ it("answers broad advice without accepting model-proposed effects", async () => 
   }
 });
 it("resumes a budget pause without repeating the paid planning call", async () => {
-  const f = await expertFixture();
+  const f = await expertFixture(undefined, true, true);
   try {
     let plans = 0,
       paused = false;
@@ -103,7 +103,7 @@ it("resumes a budget pause without repeating the paid planning call", async () =
   }
 });
 it("rejects an amendment arriving during assessment before saving a plan", async () => {
-  const f = await expertFixture();
+  const f = await expertFixture(undefined, true, true);
   try {
     const model = {
       id: "test",

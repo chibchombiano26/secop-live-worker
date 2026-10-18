@@ -161,72 +161,84 @@ export async function assessCompany(
     let finding: Finding;
     if (cached) finding = findingSchema.parse(cached);
     else {
-      const words = new Set(
-        req.wording
-          .toLowerCase()
-          .split(/\W+/)
-          .filter((w) => w.length > 3),
-      );
-      const ranked = company.chunks
-        .map((c) => ({
-          chunk: c,
-          score: [...words].filter((w) => c.text.toLowerCase().includes(w))
-            .length,
-        }))
-        .sort((a, b) => b.score - a.score);
-      const evidence = ranked.slice(0, 6).map((c) => c.chunk);
-      const raw = await model.generate({
-        purpose: "company_fit",
-        outputSchema: z.toJSONSchema(findingSchema),
-        evidence,
-        context: {
-          requirement: req,
-          companyAssertions: {
-            name: company.company.value.name,
-            activities: company.company.value.activities,
-          },
-          selectedLots,
-          expiredDocumentIds: [...company.expired],
-        },
-        instructions:
-          "Return {status:meets|does_not_meet|insufficient_evidence|not_applicable,reason,missing:string[],companyCitations:[{documentVersionId,page?,section?,excerpt}]}. Evaluate only this stated requirement. Company profile assertions are not verified evidence. Missing, expired, unreadable, mismatched fiscal period or contradictory support must be insufficient_evidence. Give specific missing evidence/actions. Do not infer compliance from absence of evidence.",
-      });
-      finding = normalizeFinding(
-        req,
-        raw,
-        evidence,
-        unverifiedEvidence,
-        selectedLots,
-      );
-      if (req.rule) {
-        const fact = company.company.value.facts.find(
-          (f) =>
-            f.field === req.rule!.field &&
-            f.period === req.rule!.period &&
-            f.unit === req.rule!.unit,
+      if (!company.chunks.length) {
+        finding = {
+          status: "insufficient_evidence",
+          reason:
+            "No hay documentos de empresa con texto extraído. Las capacidades declaradas en el perfil no acreditan este requisito.",
+          missing: [
+            "Aportar soporte vigente del requisito indicado y contrastarlo con el original.",
+          ],
+          companyCitations: [],
+        };
+      } else {
+        const words = new Set(
+          req.wording
+            .toLowerCase()
+            .split(/\W+/)
+            .filter((w) => w.length > 3),
         );
-        if (
-          !fact ||
-          fact.citations.some((c) =>
-            unverifiedEvidence.has(c.documentVersionId),
+        const ranked = company.chunks
+          .map((c) => ({
+            chunk: c,
+            score: [...words].filter((w) => c.text.toLowerCase().includes(w))
+              .length,
+          }))
+          .sort((a, b) => b.score - a.score);
+        const evidence = ranked.slice(0, 6).map((c) => c.chunk);
+        const raw = await model.generate({
+          purpose: "company_fit",
+          outputSchema: z.toJSONSchema(findingSchema),
+          evidence,
+          context: {
+            requirement: req,
+            companyAssertions: {
+              name: company.company.value.name,
+              activities: company.company.value.activities,
+            },
+            selectedLots,
+            expiredDocumentIds: [...company.expired],
+          },
+          instructions:
+            "Return {status:meets|does_not_meet|insufficient_evidence|not_applicable,reason,missing:string[],companyCitations:[{documentVersionId,page?,section?,excerpt}]}. Evaluate only this stated requirement. Company profile assertions are not verified evidence. Missing, expired, unreadable, mismatched fiscal period or contradictory support must be insufficient_evidence. Give specific missing evidence/actions. Do not infer compliance from absence of evidence.",
+        });
+        finding = normalizeFinding(
+          req,
+          raw,
+          evidence,
+          unverifiedEvidence,
+          selectedLots,
+        );
+        if (req.rule) {
+          const fact = company.company.value.facts.find(
+            (f) =>
+              f.field === req.rule!.field &&
+              f.period === req.rule!.period &&
+              f.unit === req.rule!.unit,
+          );
+          if (
+            !fact ||
+            fact.citations.some((c) =>
+              unverifiedEvidence.has(c.documentVersionId),
+            )
           )
-        )
-          finding = {
-            ...finding,
-            status: "insufficient_evidence",
-            missing: [
-              ...finding.missing,
-              "Review a cited numeric fact with matching unit and fiscal period.",
-            ],
-          };
-        else {
-          fact.citations = validateCitations(fact.citations, company.chunks);
-          finding = {
-            ...finding,
-            status: compareNumericRule(req.rule, fact),
-            companyCitations: fact.citations,
-            reason: `Deterministic ${req.rule.field} comparison (${fact.value} ${req.rule.operator} ${req.rule.value}); fact reviewed by user.`,
-          };
+            finding = {
+              ...finding,
+              status: "insufficient_evidence",
+              missing: [
+                ...finding.missing,
+                "Review a cited numeric fact with matching unit and fiscal period.",
+              ],
+            };
+          else {
+            fact.citations = validateCitations(fact.citations, company.chunks);
+            finding = {
+              ...finding,
+              status: compareNumericRule(req.rule, fact),
+              companyCitations: fact.citations,
+              reason: `Deterministic ${req.rule.field} comparison (${fact.value} ${req.rule.operator} ${req.rule.value}); fact reviewed by user.`,
+            };
+          }
         }
       }
       await repo.upsert("assessment", `part.${cacheId}`, finding);

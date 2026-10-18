@@ -3,7 +3,7 @@ import { expertFixture } from "./expert-fixture";
 import { executeExpertStudy } from "../src/dossier/expert-study";
 import { executePrivateOperation } from "../src/dossier/api";
 it("reloads the saved expert plan through the existing assistant contract", async () => {
-  const f = await expertFixture();
+  const f = await expertFixture(undefined, true, true);
   try {
     const model = {
       id: "test",

@@ -140,3 +140,37 @@ it("does not approve company support whose OCR still needs review", async () => 
     await f.mf.dispose();
   }
 });
+it("evaluates every requirement without model charges when the company has no extracted evidence", async () => {
+  const f = await expertFixture();
+  try {
+    let calls = 0;
+    const result = await assessCompany(
+      f.repo,
+      f.scope.dossierId,
+      "company-a",
+      [],
+      {
+        id: "empty-evidence-test",
+        generate: async () => {
+          calls++;
+          return {
+            status: "meets",
+            reason: "Unsupported profile assertion",
+            missing: [],
+            companyCitations: [],
+          };
+        },
+      },
+      { createTasks: false },
+    );
+    expect(calls).toBe(0);
+    expect(result.findings.map((x) => x.requirementId)).toEqual(["r1"]);
+    expect(
+      result.findings.every((x) => x.status === "insufficient_evidence"),
+    ).toBe(true);
+    expect(result.findings[0].missing.length).toBeGreaterThan(0);
+    expect(await f.repo.all("task")).toEqual([]);
+  } finally {
+    await f.mf.dispose();
+  }
+});
