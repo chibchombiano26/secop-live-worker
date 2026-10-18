@@ -125,6 +125,14 @@ cache entries persist before the job yields; the next attempt reuses them. This
 does not increase the configured per-job or owner daily model budget. The joint
 review still consumes the full extracted requirement set.
 
+If a model response truncates, extraction divides that source fragment into two
+smaller sections with a 200-character overlap. Original version and page metadata
+remain intact and no source text is dropped. The saved partition decision and
+each completed section are reused on resume. Recursive sections run sequentially
+within their existing worker, preserving the three-call ceiling. A fragment of
+500 characters or less that still truncates fails explicitly; partial model
+output is never accepted as a complete requirements inventory.
+
 When the selected company has no extracted supporting evidence, every applicable
 requirement is marked `insufficient_evidence` deterministically, without a model
 call per requirement. Declared profile capabilities never become verified
