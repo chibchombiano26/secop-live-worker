@@ -221,9 +221,14 @@ describe("reviewJointRequirements", () => {
       req(`Requisito final ${i}: ${String(i).repeat(3_750)}`, `doc-${i}`),
     );
     const observed = new Set<string>();
+    let active = 0, maximum = 0;
     const model = {
       id: "pair-coverage-model",
       generate: async (input: any) => {
+        active++;
+        maximum = Math.max(maximum, active);
+        await new Promise(resolve => setTimeout(resolve, 10));
+        active--;
         if (input.purpose === "joint_requirement_review") {
           const indices = input.context.requirements.map(
             (row: any[]) => row[0],
@@ -244,6 +249,7 @@ describe("reviewJointRequirements", () => {
       cache(),
     );
     expect(result.metrics.blocks).toBeGreaterThan(1);
+    expect(maximum).toBe(Math.min(8, result.metrics.reviewGroups));
     expect(result.metrics.requirements).toBe(14);
     expect(observed.size).toBe((14 * 13) / 2);
     expect(observed.has("0:13")).toBe(true);
@@ -353,6 +359,41 @@ describe("reviewJointRequirements", () => {
     );
     expect(resumed.metrics.reviewGroups).toBe(1);
     expect(purposes.length).toBe(before);
+  });
+
+  it("settles in-flight review caches on failure and reuses them on the next attempt", async () => {
+    const requirements = Array.from({ length: 24 }, (_, i) =>
+      req(`Requirement ${i}: ${"complete evidence ".repeat(180)}`, `doc-${i}`),
+    );
+    const store = cache();
+    let failing = true;
+    let calls = 0;
+    const successfulGroups = new Set<string>();
+    const repeatedGroups: string[] = [];
+    const model = {
+      id: "parallel-resume",
+      generate: async (input: any) => {
+        const group = JSON.stringify(input.context.requirements.map((r: any[]) => r[0]));
+        const call = ++calls;
+        if (successfulGroups.has(group)) repeatedGroups.push(group);
+        if (failing && call === 1) {
+          await new Promise(resolve => setTimeout(resolve, 1));
+          throw new Error("temporary inference failure");
+        }
+        await new Promise(resolve => setTimeout(resolve, 10));
+        successfulGroups.add(group);
+        return { summary: "Completed group", candidates: [] };
+      },
+    };
+    await expect(reviewJointRequirements(requirements, model, {}, store))
+      .rejects.toThrow("temporary inference failure");
+    expect(calls).toBe(8);
+    expect(store.values.size).toBe(7);
+    failing = false;
+    const resumed = await reviewJointRequirements(requirements, model, {}, store);
+    expect(repeatedGroups).toEqual([]);
+    expect(resumed.metrics.comparedPairs).toBe(24 * 23 / 2);
+    expect(successfulGroups.size).toBe(resumed.metrics.reviewGroups);
   });
 
   it("rejects a single requirement that cannot fit without truncating its wording", async () => {
