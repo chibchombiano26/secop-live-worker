@@ -8,10 +8,11 @@ import {
   planSchema,
   type ExpertScope,
   type ExpertPlan,
+  type ExpertSnapshot,
 } from "./expert-state";
-import { dossierEvidence } from "./synthesis";
+import { dossierEvidence, type Requirement } from "./synthesis";
 import { buildExhaustiveChecklist } from "./checklist";
-import { assessCompany } from "./assessment";
+import { assessCompany, normalizeFinding } from "./assessment";
 import { companyEvidence } from "./companies";
 import type { ModelProvider } from "./model";
 import type { DossierRepository } from "./repository";
@@ -19,7 +20,17 @@ export function createExpertTools(
   repo: DossierRepository,
   scope: ExpertScope,
   model: ModelProvider,
+  options: { snapshot?: ExpertSnapshot } = {},
 ) {
+  async function assertSnapshot() {
+    const current = await expertSnapshot(repo, scope);
+    if (
+      options.snapshot &&
+      JSON.stringify(options.snapshot) !== JSON.stringify(current)
+    )
+      throw new DossierError("EXPERT_SNAPSHOT_CHANGED", 409);
+    return options.snapshot ?? current;
+  }
   async function authorize(action: ExpertAction) {
     if (scope.ownerId !== repo.context.ownerId)
       throw new DossierError("AGENT_CONTEXT_MISMATCH", 403);
@@ -72,6 +83,7 @@ export function createExpertTools(
       return null;
     }
     await authorize("evaluate_company");
+    await assertSnapshot();
     const result = await assessCompany(
       repo,
       scope.dossierId,
@@ -81,13 +93,46 @@ export function createExpertTools(
       { createTasks: false },
     );
     await authorize("evaluate_company");
+    await assertSnapshot();
     return result;
   }
   async function buildPreparationPlan(
     assessment?: Awaited<ReturnType<typeof assessCompany>> | null,
   ): Promise<ExpertPlan> {
+    const snapshot = await assertSnapshot();
     const saved = await authorize("review"),
       checklist = await reviewRequirements();
+    if (assessment) {
+      if (
+        assessment.dossierId !== snapshot.dossierId ||
+        assessment.companyId !== snapshot.companyProfileId ||
+        assessment.corpusRevision !== snapshot.corpusRevision ||
+        assessment.companyRevision !== snapshot.companyRevision
+      )
+        throw new DossierError("EXPERT_SNAPSHOT_CHANGED", 409);
+      const company = await companyEvidence(repo, assessment.companyId);
+      const unusable = new Set([
+        ...company.expired,
+        ...company.docs
+          .filter((d) => d.value.state !== "ready")
+          .map((d) => d.id),
+      ]);
+      const requirements = await repo.readMany<Requirement>(
+        "requirement",
+        assessment.findings.map((f) => f.requirementId),
+      );
+      assessment.findings = assessment.findings.map((finding, index) => ({
+        ...finding,
+        ...normalizeFinding(
+          requirements[index].value,
+          finding,
+          company.chunks,
+          unusable,
+          assessment.selectedLots ?? [],
+        ),
+      }));
+      if (unusable.size) assessment.readiness = "requires_review";
+    }
     const prior = await readExpertState(repo, scope);
     const items = checklist.items.flatMap((item) => {
       const finding = assessment?.findings.find(
@@ -111,8 +156,11 @@ export function createExpertTools(
         },
       ];
     });
+    await assertSnapshot();
+    if (checklist.corpusRevision !== snapshot.corpusRevision)
+      throw new DossierError("EXPERT_SNAPSHOT_CHANGED", 409);
     return {
-      snapshot: await expertSnapshot(repo, scope),
+      snapshot,
       originatingTurnId: saved.job.targetId,
       items,
     };
@@ -123,6 +171,9 @@ export function createExpertTools(
     expectedRevision: number,
   ) {
     await authorize("save_plan");
+    const snapshot = await assertSnapshot();
+    if (JSON.stringify(plan.snapshot) !== JSON.stringify(snapshot))
+      throw new DossierError("EXPERT_SNAPSHOT_CHANGED", 409);
     const parsed = planSchema.parse(plan),
       checklist = await reviewRequirements();
     for (const item of parsed.items) {
@@ -148,6 +199,7 @@ export function createExpertTools(
   async function prepareProposal() {
     await authorize("prepare_proposal");
     await reviewRequirements();
+    await assertSnapshot();
     return {
       actionId: "proposal-docx",
       status: "ready_for_host_action" as const,
@@ -157,7 +209,7 @@ export function createExpertTools(
   async function rememberDecision(operationId: string) {
     const { request, job } = await authorize("remember_decision"),
       state = await readExpertState(repo, scope),
-      snapshot = await expertSnapshot(repo, scope);
+      snapshot = await assertSnapshot();
     const value = {
       snapshot,
       decisions: [

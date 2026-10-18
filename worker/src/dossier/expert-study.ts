@@ -131,16 +131,16 @@ export async function executeExpertStudy(
     };
     await checkpoint({ expertExecution: execution, stage: "expert_planned" });
   }
-  const tools = createExpertTools(repo, scope, model);
+  const tools = createExpertTools(repo, scope, model, { snapshot });
   const checklist = await tools.reviewRequirements();
   const savedState = await readExpertState(repo, scope);
   let assessment: Awaited<ReturnType<typeof tools.evaluateCompany>> = null;
   if (execution.actions.includes("evaluate_company")) {
     if (execution.assessmentId) {
       const saved = await readAssessment(repo, execution.assessmentId);
-      assessment = { id: saved.id, ...saved.value } as NonNullable<
-        typeof assessment
-      >;
+      assessment = saved.stale
+        ? await tools.evaluateCompany()
+        : ({ id: saved.id, ...saved.value } as NonNullable<typeof assessment>);
     } else {
       assessment = await tools.evaluateCompany();
       if (assessment) {
