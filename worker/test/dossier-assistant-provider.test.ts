@@ -98,14 +98,44 @@ function call(input: any, actor = context) {
 }
 describe("native assistant private provider", () => {
   it("saves original request permissions and rejects client authority", async () => {
-    const input = { dossierId: "CO1.REQ.1", message: "Guarda un plan", expectedRevision: 0, idempotencyKey: "expert-authority-test" };
-    const admitted: any = await executePrivateOperation(env, context, "chat", input, "https://test.invalid");
+    const input = {
+      dossierId: "CO1.REQ.1",
+      message: "Guarda un plan",
+      expectedRevision: 0,
+      idempotencyKey: "expert-authority-test",
+    };
+    const admitted: any = await executePrivateOperation(
+      env,
+      context,
+      "chat",
+      input,
+      "https://test.invalid",
+    );
     const saved = await repo.read<any>("message", "chat.expert-authority-test");
     await repo.cancelJob(admitted.job.id);
-    expect(saved.value.authority.scopes).toEqual(["conversation:write", "dossier:read"]);
+    expect(saved.value.authority.scopes).toEqual([
+      "conversation:write",
+      "dossier:read",
+    ]);
     expect(saved.value.authority.requestHash).toMatch(/^[a-f0-9]{64}$/);
-    await expect(executePrivateOperation(env, context, "chat", { ...input, authority: { scopes: ["dossier:write"] } }, "https://test.invalid")).rejects.toThrow();
-    await expect(executePrivateOperation(env, { ...context, scopes: [...context.scopes, "dossier:write"] }, "chat", input, "https://test.invalid")).rejects.toMatchObject({code: "IDEMPOTENCY_CONFLICT"});
+    await expect(
+      executePrivateOperation(
+        env,
+        context,
+        "chat",
+        { ...input, authority: { scopes: ["dossier:write"] } },
+        "https://test.invalid",
+      ),
+    ).rejects.toThrow();
+    await expect(
+      executePrivateOperation(
+        env,
+        { ...context, scopes: [...context.scopes, "dossier:write"] },
+        "chat",
+        input,
+        "https://test.invalid",
+      ),
+    ).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
   });
 
   it("loads the same persisted conversation with human source labels and OCR coverage", async () => {
@@ -452,6 +482,111 @@ describe("native assistant private provider", () => {
     expect(suggestions[0].citationIds).toEqual(["S001"]);
     expect(suggestions[1].id).toBe("req-2");
     expect(suggestions[1].citationIds).toEqual(["S002"]);
+  });
+  it("bundles more than 1,000 checklist requirements without losing wording or citations", async () => {
+    await repo.save(
+      "conversation",
+      "large-checklist-conversation",
+      {
+        dossierId: "CO1.REQ.1",
+        title: "Large checklist",
+        turnIds: ["large-checklist-turn"],
+      },
+      0,
+    );
+    const sources = Array.from({ length: 877 }, (_, index) => ({
+      reference: `S${String(index + 1).padStart(3, "0")}`,
+      documentVersionId: "doc",
+      page: index + 1,
+      excerpt: `Evidence page ${index + 1} `.padEnd(900, "x"),
+    }));
+    const items = Array.from({ length: 1001 }, (_, index) => ({
+      requirementId: `req-${index + 1}`,
+      reference: `R${String(index + 1).padStart(4, "0")}`,
+      wording: `Texto íntegro del requisito ${index + 1}`,
+      category: `category-${index + 1}`,
+      citations: [{ sourceRef: sources[index % sources.length].reference }],
+    }));
+    await repo.save(
+      "message",
+      "large-checklist-turn",
+      {
+        userMessage: "Todos los requisitos",
+        answer: "",
+        citations: [],
+        checklist: {
+          dossierId: "CO1.REQ.1",
+          corpusRevision: 6,
+          coverage: {
+            requirements: items.length,
+            citedRequirements: items.length,
+            inventoryComplete: true,
+            listedDocuments: sources.length,
+            reviewRequiredDocuments: 0,
+            unavailableDocuments: 0,
+          },
+          items,
+          sources,
+          evidenceGaps: [],
+          companyEvidence: { profileAttached: false, documents: [], note: "" },
+          cautions: [],
+        },
+        corpusRevision: 6,
+      },
+      0,
+    );
+
+    const result = await call({
+      context: { dossierId: "CO1.REQ.1" },
+      request: { method: "load" },
+    });
+    const message = result.messages.find(
+      (entry: any) => entry.id === "large-checklist-turn",
+    );
+    const responseBytes = new TextEncoder().encode(
+      JSON.stringify(result),
+    ).length;
+    expect(responseBytes).toBeGreaterThan(900_000);
+    expect(responseBytes).toBeLessThanOrEqual(1_900_000);
+    expect(message.citations).toHaveLength(877);
+    expect(message.citations[876].id).toBe("S877");
+    const suggestions = message.taskSuggestions;
+    expect(suggestions.length).toBeLessThanOrEqual(1000);
+    expect(suggestions.length).toBeGreaterThan(0);
+    expect(suggestions).toHaveLength(101);
+    expect(
+      suggestions.every((suggestion: any) =>
+        suggestion.id.startsWith("requirement-group."),
+      ),
+    ).toBe(true);
+    expect(
+      suggestions.every((suggestion: any) =>
+        suggestion.title.startsWith("Verificar requisitos R"),
+      ),
+    ).toBe(true);
+    expect(
+      suggestions.every((suggestion: any) => suggestion.title.length <= 200),
+    ).toBe(true);
+    expect(
+      suggestions.every(
+        (suggestion: any) => suggestion.description.length <= 20_000,
+      ),
+    ).toBe(true);
+    expect(
+      new Set(suggestions.flatMap((suggestion: any) => suggestion.citationIds))
+        .size,
+    ).toBe(877);
+    const bundledText = suggestions
+      .map((suggestion: any) => suggestion.description)
+      .join("\n");
+    for (const item of items) {
+      expect(bundledText).toContain(item.wording);
+      expect(bundledText).toContain(
+        `Referencia: ${item.reference}. Categoría: ${item.category}.`,
+      );
+    }
+    expect(message.text).toContain("se agruparon");
+    expect(message.text).toContain("lista completa de requisitos individuales");
   });
   it("checks stored PDF metadata once per distinct source across transcript history", async () => {
     const cacheRepo = new DossierRepository(env, {

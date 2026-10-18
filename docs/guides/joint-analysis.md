@@ -34,6 +34,17 @@ The report `analysis` field records requirement/document counts, visited extract
 fragments, cache hits, comparison groups, pair coverage and model request counts.
 These metrics distinguish work reused from new inference requests.
 
+## Bounded database work
+
+Synthesis preloads validated extraction/comparison cache records in owner-scoped
+batches and still selects entries by the exact existing content hash. Final
+requirement writes use bounded revision-checked batches. Cached progress is
+persisted every twenty completed comparisons and at phase completion; model calls
+retain their lease heartbeats. Company evaluation reads the full requirement
+index in batches, and profiles without extracted supporting evidence skip model
+and cache lookups that cannot establish compliance. These changes retain every
+requirement while avoiding thousands of individual D1 round trips per attempt.
+
 ## Large aggregate persistence
 
 A complete report can exceed the size of any individual model response. The
@@ -42,14 +53,29 @@ existing bounded input and validated output schema. Exceeding the aggregate
 capacity fails explicitly with `REPORT_CAPACITY_LIMIT`, never by clipping
 requirements or classifying a complete collection as a truncated inference.
 
-Report and company-assessment records larger than 500,000 serialized characters
+Report, company-assessment and chat-message records larger than 500,000 serialized characters
 are stored as immutable, content-addressed JSON objects in the existing private
 R2 bucket, with a versioned reference in the owner-scoped D1 record. The complete
 UTF-8 object is bounded to 20 MB. Repository reads hydrate and verify its size and
 SHA-256 before returning the existing record shape. Missing or corrupt objects
 fail closed. Small records remain inline, optimistic revisions still apply, and
-other record kinds retain the existing size limit. No existing resource or data
+other record kinds retain the existing size limit. Conversation turns keep their
+atomic revision and pending-request checks when storing a large message. The
+complete checklist has a separate 20-million-character output bound; oversized
+output fails explicitly. No existing resource or data
 migration is required.
+
+## Savia assistant presentation
+
+The adapter keeps the host's existing message, citation and task-suggestion
+contracts. When more than 1,000 task suggestions are needed, it groups at most
+ten original requirements per suggested task, retaining every wording, reference,
+category and citation. Each description remains below 20,000 characters. The
+complete individual checklist is still displayed, with a grouping notice.
+Identical unsupported-company findings can share a concise summary; the full
+individual findings remain in the saved assessment. No company assertion becomes
+evidence. The complete adapter response is bounded to 1.9 MB and fails explicitly
+rather than silently clipping history or sources.
 
 ## Complete checklist questions
 
