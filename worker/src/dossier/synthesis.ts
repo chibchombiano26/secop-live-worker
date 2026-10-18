@@ -135,7 +135,8 @@ export async function extractRequirements(
     put: (key: string, value: unknown) => Promise<void>;
   },
 ) {
-  const parts: z.infer<typeof partSchema>[] = [];
+  type Part = z.infer<typeof partSchema>;
+  const parts: Part[][] = [];
   // Dense pages can produce more output than one bounded inference can finish.
   // Keep original version/page metadata and cover the complete text with overlap.
   const fragments = chunks.flatMap((chunk) => {
@@ -147,8 +148,8 @@ export async function extractRequirements(
     }
     return output;
   });
-  const inFlight = new Map<string, Promise<z.infer<typeof partSchema>>>();
-  async function extractFragment(chunk: EvidenceChunk) {
+  const inFlight = new Map<string, Promise<Part[]>>();
+  async function extractFragment(chunk: EvidenceChunk): Promise<Part[]> {
     const key = await sha256(`${model.id}:${JSON.stringify(chunk)}`);
     let pending = inFlight.get(key);
     if (!pending) {
@@ -157,8 +158,42 @@ export async function extractRequirements(
     }
     return pending;
   }
-  async function extractFragmentForKey(chunk: EvidenceChunk, key: string) {
+  async function splitFragment(chunk: EvidenceChunk): Promise<Part[]> {
+    const middle = Math.floor(chunk.text.length / 2);
+    // Overlap preserves conditions that cross the split; source metadata is unchanged.
+    const left = await extractFragment({
+      ...chunk,
+      text: chunk.text.slice(0, middle + 100),
+    });
+    const right = await extractFragment({
+      ...chunk,
+      text: chunk.text.slice(middle - 100),
+    });
+    return [...left, ...right];
+  }
+  async function extractFragmentForKey(
+    chunk: EvidenceChunk,
+    key: string,
+  ): Promise<Part[]> {
     const cached = await cache?.get(key);
+    if (cached && (cached as { splitFragment?: unknown }).splitFragment === 1)
+      return splitFragment(chunk);
+    try {
+      return [await generateFragment(chunk, key, cached)];
+    } catch (error) {
+      if (
+        !(error instanceof DossierError) ||
+        error.code !== "MODEL_OUTPUT_TRUNCATED" ||
+        chunk.text.length <= 500
+      )
+        throw error;
+      // Save the partition decision before its children, so an interrupted job does
+      // not repeatedly pay for the same oversized inference. Children cache normally.
+      await cache?.put(key, { splitFragment: 1 });
+      return splitFragment(chunk);
+    }
+  }
+  async function generateFragment(chunk: EvidenceChunk, key: string, cached: unknown) {
     let result: z.infer<typeof partSchema> | undefined;
     let previous: unknown;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -224,9 +259,9 @@ export async function extractRequirements(
   );
   if (failed) throw failure;
   return {
-    requirements: parts.flatMap((p) => p.requirements),
-    summaries: parts.map((p) => p.summary),
-    conflicts: parts.flatMap((p) => p.conflicts),
+    requirements: parts.flat().flatMap((p) => p.requirements),
+    summaries: parts.flat().map((p) => p.summary),
+    conflicts: parts.flat().flatMap((p) => p.conflicts),
   };
 }
 export async function dossierEvidence(
