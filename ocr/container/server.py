@@ -16,6 +16,7 @@ from typing import Callable
 
 MAX_REQUEST_BYTES = 25 * 1024 * 1024
 MAX_PAGES = 20
+MAX_RANGE_PAGES = 5
 PROCESS_DEADLINE_SECONDS = 78
 PARSER_VERSION = "ocrmypdf-tesseract-v1"
 
@@ -73,7 +74,9 @@ def _decode_stdout(result) -> str:
     return str(stdout or "")
 
 
-def _page_count(pdf_path: Path, *, deadline: float, runner: Callable) -> int:
+def _page_count(
+    pdf_path: Path, *, deadline: float, runner: Callable, enforce_limit: bool = True,
+) -> int:
     try:
         result = _run_before_deadline(["pdfinfo", str(pdf_path)], deadline, runner)
     except subprocess.CalledProcessError as exc:
@@ -89,13 +92,38 @@ def _page_count(pdf_path: Path, *, deadline: float, runner: Callable) -> int:
     page_count = int(match.group(1))
     if page_count < 1:
         raise RequestError(422, "OCR_INVALID_PDF", "PDF has no pages")
-    if page_count > MAX_PAGES:
+    if enforce_limit and page_count > MAX_PAGES:
         raise RequestError(413, "OCR_PAGE_LIMIT", f"PDF exceeds the {MAX_PAGES}-page OCR limit")
     return page_count
 
 
-def extract_pdf(pdf_bytes: bytes, *, runner: Callable | None = None) -> dict:
-    """OCR a complete PDF and return one layout-preserving text entry per page."""
+def _validate_range(start_page: int | None, requested_page_count: int | None):
+    if start_page is None and requested_page_count is None:
+        return None
+    if start_page is None or requested_page_count is None:
+        raise RequestError(400, "OCR_INVALID_PAGE_RANGE", "Both page range values are required")
+    if (
+        isinstance(start_page, bool)
+        or isinstance(requested_page_count, bool)
+        or not isinstance(start_page, int)
+        or not isinstance(requested_page_count, int)
+        or start_page < 1
+        or requested_page_count < 1
+        or requested_page_count > MAX_RANGE_PAGES
+    ):
+        raise RequestError(400, "OCR_INVALID_PAGE_RANGE", "Page range values are invalid")
+    return start_page, requested_page_count
+
+
+def extract_pdf(
+    pdf_bytes: bytes,
+    *,
+    runner: Callable | None = None,
+    start_page: int | None = None,
+    page_count: int | None = None,
+) -> dict:
+    """OCR a complete PDF or one bounded range, preserving original page numbers."""
+    page_range = _validate_range(start_page, page_count)
     if not isinstance(pdf_bytes, bytes) or not pdf_bytes.startswith(b"%PDF-"):
         raise RequestError(422, "OCR_INVALID_PDF", "Request body must contain raw PDF bytes")
     if len(pdf_bytes) > MAX_REQUEST_BYTES:
@@ -108,7 +136,46 @@ def extract_pdf(pdf_bytes: bytes, *, runner: Callable | None = None) -> dict:
             output_path = Path(temp_dir) / "ocr.pdf"
             input_path.write_bytes(pdf_bytes)
 
-            page_count = _page_count(input_path, deadline=deadline, runner=runner)
+            total_page_count = _page_count(
+                input_path,
+                deadline=deadline,
+                runner=runner,
+                enforce_limit=page_range is None,
+            )
+            if page_range is None:
+                range_start = 1
+                range_end = total_page_count
+                ocr_input_path = input_path
+            else:
+                range_start, requested_page_count = page_range
+                if range_start > total_page_count:
+                    raise RequestError(
+                        422,
+                        "OCR_INVALID_PAGE_RANGE",
+                        "Page range starts beyond the end of the PDF",
+                    )
+                range_end = min(range_start + requested_page_count - 1, total_page_count)
+                split_template = Path(temp_dir) / "page-%d.pdf"
+                _run_before_deadline(
+                    [
+                        "pdfseparate", "-f", str(range_start), "-l", str(range_end),
+                        str(input_path), str(split_template),
+                    ],
+                    deadline,
+                    runner,
+                )
+                batch_path = Path(temp_dir) / "batch.pdf"
+                split_pages = [
+                    str(Path(temp_dir) / f"page-{number}.pdf")
+                    for number in range(range_start, range_end + 1)
+                ]
+                _run_before_deadline(
+                    ["pdfunite", *split_pages, str(batch_path)],
+                    deadline,
+                    runner,
+                )
+                ocr_input_path = batch_path
+
             _run_before_deadline(
                 [
                     "ocrmypdf",
@@ -119,7 +186,7 @@ def extract_pdf(pdf_bytes: bytes, *, runner: Callable | None = None) -> dict:
                     "--jobs", "1",
                     "--optimize", "0",
                     "--output-type", "pdf",
-                    str(input_path),
+                    str(ocr_input_path),
                     str(output_path),
                 ],
                 deadline,
@@ -140,13 +207,18 @@ def extract_pdf(pdf_bytes: bytes, *, runner: Callable | None = None) -> dict:
     except OSError:
         raise RequestError(500, "OCR_INTERNAL_ERROR", "PDF OCR service could not access its processing tools") from None
 
-    raw_pages = _decode_stdout(text_result).split("\f")
-    if raw_pages and not raw_pages[-1].strip():
+    raw_text = _decode_stdout(text_result)
+    raw_pages = raw_text.split("\f")
+    if raw_text.endswith("\f"):
         raw_pages.pop()
-    raw_pages = raw_pages[:page_count]
-    raw_pages.extend([""] * (page_count - len(raw_pages)))
+    expected_pages = range_end - range_start + 1
+    if len(raw_pages) != expected_pages:
+        raise RequestError(422, "OCR_INVALID_PDF", "PDF OCR returned an incomplete page range")
 
-    pages = [{"page": index + 1, "text": text.strip()} for index, text in enumerate(raw_pages)]
+    pages = [
+        {"page": range_start + index, "text": text.strip()}
+        for index, text in enumerate(raw_pages)
+    ]
     warnings = [
         f"Page {page['page']} contains no extractable text; manual review may be needed"
         for page in pages
@@ -156,8 +228,11 @@ def extract_pdf(pdf_bytes: bytes, *, runner: Callable | None = None) -> dict:
         "parserVersion": PARSER_VERSION,
         "pages": pages,
         "warnings": warnings,
-        "complete": True,
-        "pageCount": page_count,
+        "complete": range_end == total_page_count,
+        "pageCount": total_page_count,
+        "startPage": range_start,
+        "endPage": range_end,
+        "nextPage": None if range_end == total_page_count else range_end + 1,
     }
 
 
@@ -211,6 +286,29 @@ def make_handler(
             if length > max_bytes:
                 self._json(413, {"error": "OCR_FILE_LIMIT", "message": "PDF exceeds the 25 MiB request limit"})
                 return
+            raw_start_page = self.headers.get("x-ocr-start-page")
+            raw_page_count = self.headers.get("x-ocr-page-count")
+            if (raw_start_page is None) != (raw_page_count is None):
+                self._json(400, {"error": "OCR_INVALID_PAGE_RANGE", "message": "Both page range headers are required"})
+                return
+            page_range = None
+            if raw_start_page is not None:
+                if (
+                    re.fullmatch(r"[1-9][0-9]*", raw_start_page) is None
+                    or re.fullmatch(r"[1-9][0-9]*", raw_page_count or "") is None
+                ):
+                    self._json(400, {"error": "OCR_INVALID_PAGE_RANGE", "message": "Page range headers are invalid"})
+                    return
+                try:
+                    parsed_start = int(raw_start_page)
+                    parsed_count = int(raw_page_count)
+                except ValueError:
+                    self._json(400, {"error": "OCR_INVALID_PAGE_RANGE", "message": "Page range headers are invalid"})
+                    return
+                if parsed_count > MAX_RANGE_PAGES:
+                    self._json(400, {"error": "OCR_INVALID_PAGE_RANGE", "message": "Page range exceeds the 5-page limit"})
+                    return
+                page_range = (parsed_start, parsed_count)
             if not job_lock.acquire(blocking=False):
                 self._json(429, {"error": "OCR_BUSY", "message": "OCR worker is busy"})
                 return
@@ -221,7 +319,14 @@ def make_handler(
                     self._json(422, {"error": "OCR_INVALID_PDF", "message": "Incomplete PDF request body"})
                     return
                 try:
-                    result = processor(pdf_bytes)
+                    if page_range is None:
+                        result = processor(pdf_bytes)
+                    else:
+                        result = processor(
+                            pdf_bytes,
+                            start_page=page_range[0],
+                            page_count=page_range[1],
+                        )
                 except RequestError as exc:
                     self._json(exc.status, {"error": exc.code, "message": exc.message})
                     return

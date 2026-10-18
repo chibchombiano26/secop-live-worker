@@ -5,6 +5,7 @@ import threading
 import unittest
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import server
@@ -65,6 +66,81 @@ class ExtractTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status, 413)
         self.assertEqual(ctx.exception.code, "OCR_PAGE_LIMIT")
 
+    def test_extracts_bounded_range_from_pdf_over_20_pages_with_original_numbers(self):
+        runner = FakeRunner([
+            "Pages: 22\n",  # Original PDF.
+            "",  # pdfseparate.
+            "",  # pdfunite.
+            "",  # ocrmypdf.
+            "first\fsecond\f",  # pdftotext for final short range.
+        ])
+
+        result = server.extract_pdf(b"%PDF-test", runner=runner, start_page=21, page_count=5)
+
+        self.assertEqual(result["pageCount"], 22)
+        self.assertEqual(result["startPage"], 21)
+        self.assertEqual(result["endPage"], 22)
+        self.assertEqual(result["nextPage"], None)
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["pages"], [
+            {"page": 21, "text": "first"},
+            {"page": 22, "text": "second"},
+        ])
+        separate_call = next(args for args, _ in runner.calls if args[0] == "pdfseparate")
+        self.assertEqual(separate_call[1:5], ["-f", "21", "-l", "22"])
+        unite_call = next(args for args, _ in runner.calls if args[0] == "pdfunite")
+        self.assertEqual(Path(unite_call[-1]).name, "batch.pdf")
+        ocr_call = next(args for args, _ in runner.calls if args[0] == "ocrmypdf")
+        self.assertEqual(Path(ocr_call[-2]).name, "batch.pdf")
+
+    def test_reports_next_original_page_for_incomplete_range(self):
+        runner = FakeRunner(["Pages: 24\n", "", "", "", "page 21\fpage 22\f"])
+
+        result = server.extract_pdf(b"%PDF-test", runner=runner, start_page=21, page_count=2)
+
+        self.assertEqual(result["pageCount"], 24)
+        self.assertEqual(result["startPage"], 21)
+        self.assertEqual(result["endPage"], 22)
+        self.assertEqual(result["nextPage"], 23)
+        self.assertFalse(result["complete"])
+        self.assertEqual([page["page"] for page in result["pages"]], [21, 22])
+
+    def test_ranged_pdf_does_not_silently_pad_missing_page_text(self):
+        runner = FakeRunner(["Pages: 22\n", "", "", "", "only one\f"])
+
+        with self.assertRaises(server.RequestError) as ctx:
+            server.extract_pdf(b"%PDF-test", runner=runner, start_page=21, page_count=2)
+
+        self.assertEqual(ctx.exception.status, 422)
+        self.assertEqual(ctx.exception.code, "OCR_INVALID_PDF")
+
+    def test_ranged_pdf_does_not_silently_truncate_extra_page_text(self):
+        runner = FakeRunner(["Pages: 22\n", "", "", "", "one\ftwo\fthree\f"])
+
+        with self.assertRaises(server.RequestError) as ctx:
+            server.extract_pdf(b"%PDF-test", runner=runner, start_page=21, page_count=2)
+
+        self.assertEqual(ctx.exception.status, 422)
+        self.assertEqual(ctx.exception.code, "OCR_INVALID_PDF")
+
+    def test_rejects_page_range_start_beyond_document(self):
+        runner = FakeRunner(["Pages: 22\n"])
+
+        with self.assertRaises(server.RequestError) as ctx:
+            server.extract_pdf(b"%PDF-test", runner=runner, start_page=23, page_count=1)
+
+        self.assertEqual(ctx.exception.status, 422)
+        self.assertEqual(ctx.exception.code, "OCR_INVALID_PAGE_RANGE")
+
+    def test_rejects_page_range_larger_than_five_pages(self):
+        runner = FakeRunner(["Pages: 22\n"])
+
+        with self.assertRaises(server.RequestError) as ctx:
+            server.extract_pdf(b"%PDF-test", runner=runner, start_page=1, page_count=6)
+
+        self.assertEqual(ctx.exception.status, 400)
+        self.assertEqual(ctx.exception.code, "OCR_INVALID_PAGE_RANGE")
+
     def test_rejects_encrypted_pdf(self):
         runner = FakeRunner(["Pages: 1\nEncrypted: yes\n"])
         with self.assertRaises(server.RequestError) as ctx:
@@ -90,12 +166,18 @@ class ExtractTests(unittest.TestCase):
 class HttpTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(
-            processor=lambda content: {
+        cls.received_ranges = []
+
+        def processor(content, **kwargs):
+            cls.received_ranges.append(kwargs)
+            return {
                 "parserVersion": "ocrmypdf-tesseract-v1",
                 "pages": [{"page": 1, "text": "ok"}],
                 "warnings": [], "complete": True, "pageCount": 1,
-            },
+            }
+
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(
+            processor=processor,
             max_bytes=16,
         ))
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
@@ -121,6 +203,27 @@ class HttpTests(unittest.TestCase):
         status, body = self.request()
         self.assertEqual(status, 200)
         self.assertEqual(body["pages"][0]["text"], "ok")
+
+    def test_forwards_validated_page_range_to_processor(self):
+        self.received_ranges.clear()
+
+        status, _ = self.request(headers={"x-ocr-start-page": "21", "x-ocr-page-count": "5"})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(self.received_ranges, [{"start_page": 21, "page_count": 5}])
+
+    def test_rejects_partial_or_invalid_page_range_headers(self):
+        cases = [
+            ({"x-ocr-start-page": "1"}, 400),
+            ({"x-ocr-start-page": "0", "x-ocr-page-count": "1"}, 400),
+            ({"x-ocr-start-page": "1x", "x-ocr-page-count": "1"}, 400),
+            ({"x-ocr-start-page": "1", "x-ocr-page-count": "6"}, 400),
+        ]
+        for headers, expected_status in cases:
+            with self.subTest(headers=headers):
+                status, body = self.request(headers=headers)
+                self.assertEqual(status, expected_status)
+                self.assertEqual(body["error"], "OCR_INVALID_PAGE_RANGE")
 
     def test_rejects_wrong_route_and_method(self):
         self.assertEqual(self.request(path="/other")[0], 404)

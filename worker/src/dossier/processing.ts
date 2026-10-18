@@ -149,7 +149,25 @@ export async function executeProcessingJob(
               })
             : new HttpExtractionProvider(env);
       if (!adapters?.extractor && env.SECOP_OCR && !env.EXTRACTOR_URL)
-        extractor = new CpuOcrFallbackProvider(extractor, env.SECOP_OCR);
+        extractor = new CpuOcrFallbackProvider(extractor, env.SECOP_OCR, {
+          load: async () => {
+            const saved = await repo.getFile(`ocr-pages-v1.${doc.id}`);
+            return saved ? JSON.parse(await saved.text()) : null;
+          },
+          save: async (value) => {
+            await repo.putFile(
+              `ocr-pages-v1.${doc.id}`,
+              new TextEncoder().encode(JSON.stringify(value)),
+              "application/json",
+            );
+            const batch = value as { pages: unknown[]; pageCount: number };
+            await checkpoint({
+              extractedPages: batch.pages.length,
+              pageCount: batch.pageCount,
+              stage: "ocr_pages",
+            });
+          },
+        });
       try {
         await extractDocument(repo, doc.id, extractor, () =>
           checkpoint({ stage: "extracting", documentId: doc.id }),
