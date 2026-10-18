@@ -19,7 +19,10 @@ export type EntityKind =
   | "message"
   | "upload"
   | "source"
-  | "proposal";
+  | "proposal"
+  | "expert_plan"
+  | "expert_memory"
+  | "expert_receipt";
 export type Stored<T> = {
   id: string;
   revision: number;
