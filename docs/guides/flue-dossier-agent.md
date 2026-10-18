@@ -136,6 +136,12 @@ before resume; results are merged in original plan and candidate order so
 completion timing cannot change candidate selection, conflicts, or amendments.
 Verification retains the existing both-side citation and amendment rules.
 
+Uncached group inference narrows the response schema's candidate indices to its
+original source-block ranges. Cross-block groups use disjoint left/right ranges;
+diagonal groups retain within-block comparisons. This prevents cross-block
+self-comparisons and out-of-group identifiers without changing the comparison
+plan or legacy cache keys. Backend validation remains authoritative.
+
 If a model response truncates, extraction divides that source fragment into two
 smaller sections with a 200-character overlap. Original version and page metadata
 remain intact and no source text is dropped. The saved partition decision and

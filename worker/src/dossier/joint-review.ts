@@ -214,6 +214,52 @@ function reviewInput(
     outputSchema: z.toJSONSchema(reviewSchema),
   };
 }
+function candidateScopes(group: Group, blocks: number[][]) {
+  if (group.summaryAllowed)
+    return { left: group.indices, right: group.indices };
+  const leftBlock = blocks.find((block) =>
+    block.includes(group.indices[0]),
+  );
+  if (!leftBlock) throw invalidOutput();
+  const left = group.indices.filter((index) => leftBlock.includes(index));
+  const right = group.indices.filter((index) => !leftBlock.includes(index));
+  if (!left.length || !right.length) throw invalidOutput();
+  return { left, right };
+}
+function boundCandidateIndices(
+  input: ReturnType<typeof reviewInput>,
+  scopes: ReturnType<typeof candidateScopes>,
+) {
+  const schema = input.outputSchema as Record<string, any>;
+  const properties = schema.properties as Record<string, any>;
+  const candidates = properties.candidates as Record<string, any>;
+  const items = candidates.items as Record<string, any>;
+  const itemProperties = items.properties as Record<string, any>;
+  const range = (indices: number[]) => ({
+    minimum: Math.min(...indices),
+    maximum: Math.max(...indices),
+  });
+  return {
+    ...input,
+    outputSchema: {
+      ...schema,
+      properties: {
+        ...properties,
+        candidates: {
+          ...candidates,
+          items: {
+            ...items,
+            properties: {
+              ...itemProperties,
+              left: { ...itemProperties.left, ...range(scopes.left) },
+              right: { ...itemProperties.right, ...range(scopes.right) },
+            },
+          },
+        },
+      },
+    },
+  };
+}
 function makeGroups(
   requirements: Requirement[],
   index: ReturnType<typeof sourceIndex>,
@@ -335,6 +381,7 @@ export async function reviewJointRequirements(
   let reviewRequests = 0;
   const results: z.infer<typeof reviewSchema>[] = [];
   let completed = 0;
+  let maxSentReviewRequestChars = 0;
   let progressWrites = Promise.resolve();
   await checkpoint?.({
     phase: "joint_review",
@@ -352,7 +399,16 @@ export async function reviewJointRequirements(
     if (cached !== null) {
       result = reviewSchema.parse(cached);
     } else {
-      const raw = await model.generate(input);
+      const generatedInput = boundCandidateIndices(
+        input,
+        candidateScopes(group, plan.blocks),
+      );
+      const generatedInputChars = checkRequest(generatedInput);
+      maxSentReviewRequestChars = Math.max(
+        maxSentReviewRequestChars,
+        generatedInputChars,
+      );
+      const raw = await model.generate(generatedInput);
       try {
         result = reviewSchema.parse(raw);
       } catch (error) {
@@ -429,7 +485,7 @@ export async function reviewJointRequirements(
   const conflicts: string[] = [];
   const candidateReviews: JointReviewResult["candidateReviews"] = [];
   let verificationRequests = 0;
-  let maxRequestChars = plan.maxRequestChars;
+  let maxRequestChars = maxSentReviewRequestChars;
   const reviewCandidates = [...candidates.values()];
   const verificationResults: Array<{
     candidate: Candidate;
@@ -516,10 +572,7 @@ export async function reviewJointRequirements(
         verificationSchemaForIds([...citationMap.keys()]),
       ),
     };
-    maxRequestChars = Math.max(
-      maxRequestChars,
-      checkRequest(verificationInput),
-    );
+    const verificationInputChars = checkRequest(verificationInput);
     const key = await sha256(
       `joint-verify:v1:${model.id}:${JSON.stringify(verificationInput)}`,
     );
@@ -535,6 +588,7 @@ export async function reviewJointRequirements(
         throw invalidOutput();
       }
     } else {
+      maxRequestChars = Math.max(maxRequestChars, verificationInputChars);
       const raw = await model.generate(verificationInput);
       try {
         verified = verificationSchema.parse(raw);
