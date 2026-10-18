@@ -448,7 +448,10 @@ export async function synthesizeDossier(
       ...review,
       leftRequirementId: requirementIds[review.left],
       rightRequirementId: requirementIds[review.right],
-      citations: validateCitations(review.citations, chunks),
+      citations:
+        review.decision === "unconfirmed" && review.citations.length === 0
+          ? []
+          : validateCitations(review.citations, chunks),
     })),
     citations: parts.requirements.flatMap((r) => r.citations),
     requirementIds,

@@ -21,7 +21,9 @@ must cite evidence from both sides. Amendments require explicit direction and a
 verbatim passage from the replacement source containing explicit change language.
 Missing change evidence downgrades the proposal to unconfirmed; added detail and
 chronology alone are insufficient. The report retains the individual requirements, original
-citations, candidate decisions and document coverage for review.
+citations, candidate decisions and document coverage for review. An unconfirmed
+candidate may retain an empty citation list; it is not promoted to a sourced
+conflict. Confirmed findings still require validated evidence from both sides.
 
 Each comparison and verification is cached only after validation. Keys include
 the model, complete input, coverage, instructions and schema. Progress checkpoints

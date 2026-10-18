@@ -921,9 +921,22 @@ describe("persisted dossier, assessment and chat workflow", () => {
           return {
             summary:
               "Todos los requisitos deben revisarse antes de preparar la oferta.",
-            candidates: [],
+            candidates: [
+              {
+                left: 0,
+                right: 1,
+                kind: "conflict",
+                reason: "Check whether these source obligations differ.",
+              },
+            ],
           };
         }
+        if (input.purpose === "joint_conflict_verification")
+          return {
+            decision: "unconfirmed",
+            reason: "The cited obligations are compatible.",
+            citationIds: [],
+          };
         if (input.purpose === "cross_document_review") oldCalls++;
         const generated = await model.generate(input);
         return input.purpose === "extract_requirements"
@@ -940,7 +953,7 @@ describe("persisted dossier, assessment and chat workflow", () => {
       ([kind, id]) => kind === "report" && /^(part|joint)\./.test(id),
     ).length;
     individualReads.mockRestore();
-    expect(cacheReadCount).toBeLessThanOrEqual(428);
+    expect(cacheReadCount).toBeLessThanOrEqual(430);
     expect(oldCalls).toBe(0);
     expect(jointCalls).toBe(1);
     expect(Math.max(...inputSizes)).toBeLessThanOrEqual(48000);
@@ -948,6 +961,10 @@ describe("persisted dossier, assessment and chat workflow", () => {
     expect(report.coverage.indexed).toBe(2);
     expect(report.requirementIds).toHaveLength(213);
     expect(report.citations).toHaveLength(213);
+    expect(report.candidateReviews[0]).toMatchObject({
+      decision: "unconfirmed",
+      citations: [],
+    });
     expect(JSON.stringify(report).length).toBeGreaterThan(500_000);
     const persistedReport = await repo.read<any>("report", `${d.id}:1`);
     expect(persistedReport.value).toEqual(report);
