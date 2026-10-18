@@ -1,3 +1,4 @@
+import { executeExpertStudy } from "./expert-study";
 import { extractCompanyFacts } from "./company-facts";
 import { consumeOwnerLimit } from "./limits";
 import { DossierError, PRIVATE_SCOPES } from "./contracts";
@@ -229,16 +230,7 @@ export async function executeProcessingJob(
       return;
     }
     case "chat": {
-      const request = await repo.read<ChatInput>("message", job.targetId);
-      const result = await answerTenderQuestion(repo, request.value, model(), {
-        env,
-        heartbeat: () => checkpoint({ stage: "retrieving_evidence" }),
-      });
-      await checkpoint({
-        stage: "answered",
-        dossierId: request.value.dossierId,
-        result: { conversationId: result.conversationId },
-      });
+      await executeExpertStudy(repo, job, env, adapters);
       return;
     }
   }

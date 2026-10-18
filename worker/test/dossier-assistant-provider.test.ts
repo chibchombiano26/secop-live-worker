@@ -97,6 +97,17 @@ function call(input: any, actor = context) {
   ) as Promise<any>;
 }
 describe("native assistant private provider", () => {
+  it("saves original request permissions and rejects client authority", async () => {
+    const input = { dossierId: "CO1.REQ.1", message: "Guarda un plan", expectedRevision: 0, idempotencyKey: "expert-authority-test" };
+    const admitted: any = await executePrivateOperation(env, context, "chat", input, "https://test.invalid");
+    const saved = await repo.read<any>("message", "chat.expert-authority-test");
+    await repo.cancelJob(admitted.job.id);
+    expect(saved.value.authority.scopes).toEqual(["conversation:write", "dossier:read"]);
+    expect(saved.value.authority.requestHash).toMatch(/^[a-f0-9]{64}$/);
+    await expect(executePrivateOperation(env, context, "chat", { ...input, authority: { scopes: ["dossier:write"] } }, "https://test.invalid")).rejects.toThrow();
+    await expect(executePrivateOperation(env, { ...context, scopes: [...context.scopes, "dossier:write"] }, "chat", input, "https://test.invalid")).rejects.toMatchObject({code: "IDEMPOTENCY_CONFLICT"});
+  });
+
   it("loads the same persisted conversation with human source labels and OCR coverage", async () => {
     const r = await call({
       context: { dossierId: "CO1.REQ.1" },

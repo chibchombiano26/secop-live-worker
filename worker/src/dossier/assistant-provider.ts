@@ -1,3 +1,4 @@
+import { readExpertState } from "./expert-state";
 import { sha256 } from "./downloads";
 import { renderExhaustiveChecklist } from "./checklist";
 import { z } from "zod/v4";
@@ -56,6 +57,25 @@ export async function runAssistantProvider(
   const selectedCompany = context.companyProfileId
     ? await repo.read<{ name: string }>("company", context.companyProfileId)
     : null;
+  async function sourceDossier(
+    documentId: string,
+    document: { dossierId?: unknown },
+  ) {
+    if (document.dossierId === context.dossierId) return context.dossierId;
+    if (
+      context.companyProfileId &&
+      document.dossierId === `company:${context.companyProfileId}`
+    ) {
+      const evidence = await repo.allMatching<{ documentId: string }>(
+        "evidence",
+        "companyId",
+        [context.companyProfileId],
+      );
+      if (evidence.some((e) => e.value.documentId === documentId))
+        return String(document.dossierId);
+    }
+    return null;
+  }
   if (request.method === "generate-document")
     return createProposalDocument(repo, context, origin);
   function matches(value: { dossierId?: unknown; companyProfileId?: unknown }) {
@@ -113,13 +133,17 @@ export async function runAssistantProvider(
       "document",
       citation.documentVersionId,
     );
+    const sourceScope = await sourceDossier(
+      citation.documentVersionId,
+      document.value,
+    );
     if (
-      document.value.dossierId !== context.dossierId ||
+      !sourceScope ||
       (turn.value.checklist &&
         turn.value.checklist.dossierId !== context.dossierId)
     )
       throw new DossierError("SOURCE_CITATION_NOT_FOUND", 404);
-    const canOpen = await hasStoredPdf(repo, document.value, context.dossierId);
+    const canOpen = await hasStoredPdf(repo, document.value, sourceScope);
     if (!canOpen) throw new DossierError("SOURCE_NOT_AVAILABLE", 404);
     const page =
       Number.isSafeInteger(citation.page) && citation.page > 0
@@ -127,7 +151,7 @@ export async function runAssistantProvider(
         : undefined;
     const ticket = await createSourceTicket(repo, {
       documentId: citation.documentVersionId,
-      dossierId: context.dossierId,
+      dossierId: sourceScope,
       document: document.value,
       ...(page === undefined ? {} : { page }),
     });
@@ -237,6 +261,10 @@ export async function runAssistantProvider(
     }
   }
   const messages: Array<Record<string, unknown>> = [];
+  const expertState = await readExpertState(repo, {
+    ownerId: repo.context.ownerId,
+    ...context,
+  });
   const latestChecklistTurnId = [...(conversation?.turns ?? [])]
     .reverse()
     .find((turn) => turn.value.checklist)?.id;
@@ -259,7 +287,9 @@ export async function runAssistantProvider(
             typeof doc.value.name === "string"
               ? doc.value.name
               : "Fuente del expediente",
-          canOpen: await hasStoredPdf(repo, doc.value, context.dossierId),
+          canOpen:
+            !!(await sourceDossier(citation.documentVersionId, doc.value)) &&
+            (await hasStoredPdf(repo, doc.value, String(doc.value.dossierId))),
         };
         documents.set(citation.documentVersionId, document);
       }
@@ -284,39 +314,55 @@ export async function runAssistantProvider(
     messages.push({
       id: turn.id,
       role: "assistant",
-      text: turn.value.checklist
-        ? renderExhaustiveChecklist(turn.value.checklist, {
-            includeSourceExcerpts: false,
-          })
-        : turn.value.answer,
+      text: [
+        turn.value.expert?.summary,
+        turn.value.checklist
+          ? renderExhaustiveChecklist(turn.value.checklist, {
+              includeSourceExcerpts: false,
+            })
+          : turn.value.answer,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
       citations,
       stale: turn.value.stale,
       insufficientEvidence:
         !turn.value.checklist && turn.value.insufficientEvidence,
       ...(turn.value.checklist && turn.id === latestChecklistTurnId
         ? {
-            taskSuggestions: turn.value.checklist.items.map((item) => {
-              const suffix = `\nReferencia: ${item.reference}. Categoría: ${item.category}.`;
-              if (item.wording.length + suffix.length > 20_000)
-                throw new DossierError("TASK_SUGGESTION_TOO_LARGE", 413);
-              return {
-                id: item.requirementId || item.reference,
-                title: item.wording.slice(0, 200),
-                description: `${item.wording}${suffix}`,
-                citationIds: item.citations
-                  .map((citation) => {
-                    const sourceIndex = turn.value.checklist!.sources.findIndex(
-                      (source) => source.reference === citation.sourceRef,
-                    );
-                    return sourceIndex < 0
-                      ? null
-                      : `S${String(sourceIndex + 1).padStart(3, "0")}`;
-                  })
-                  .filter(
-                    (citationId): citationId is string => citationId !== null,
+            taskSuggestions: turn.value.checklist.items
+              .filter(
+                (item) =>
+                  !turn.value.expert?.planId ||
+                  expertState.stale ||
+                  expertState.plan?.id !== turn.value.expert.planId ||
+                  expertState.plan.value.items.some(
+                    (p) => p.requirementId === item.requirementId,
                   ),
-              };
-            }),
+              )
+              .map((item) => {
+                const suffix = `\nReferencia: ${item.reference}. Categoría: ${item.category}.`;
+                if (item.wording.length + suffix.length > 20_000)
+                  throw new DossierError("TASK_SUGGESTION_TOO_LARGE", 413);
+                return {
+                  id: item.requirementId || item.reference,
+                  title: item.wording.slice(0, 200),
+                  description: `${item.wording}${suffix}`,
+                  citationIds: item.citations
+                    .map((citation) => {
+                      const sourceIndex =
+                        turn.value.checklist!.sources.findIndex(
+                          (source) => source.reference === citation.sourceRef,
+                        );
+                      return sourceIndex < 0
+                        ? null
+                        : `S${String(sourceIndex + 1).padStart(3, "0")}`;
+                    })
+                    .filter(
+                      (citationId): citationId is string => citationId !== null,
+                    ),
+                };
+              }),
           }
         : {}),
     });

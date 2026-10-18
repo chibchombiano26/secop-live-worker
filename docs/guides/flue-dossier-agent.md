@@ -73,3 +73,44 @@ Smoke-test the built module in Miniflare and verify health, authentication and
 agent-route denial. Live validation uses an existing Savia Preview dossier and
 checks cited sources, saved company context, Workflow execution and owner/dossier
 isolation. Never use a synthetic success response as proof of a live AI run.
+
+## Expert preparation tools
+
+The saved user request captures the originating credential scopes and a request
+hash. Legacy requests may still answer, but never acquire new plan/memory writes.
+The expert workflow persists a bounded action plan before running it, retains
+original-source requirement coverage, and can evaluate the selected company
+without creating tasks implicitly. Explicit plan and decision requests persist
+scoped D1 state with corpus/company revisions and atomic idempotent receipts.
+
+Examples in the existing Savia chat:
+
+- `Dime todos los requisitos y documentos para aplicar, con fuentes.`
+- `Evalúa mi empresa y guarda un plan de preparación con lo que falta.`
+- `Guarda un plan de preparación.` (without a company, every company check stays
+  unverified; the assistant asks for a profile rather than choosing one).
+- `Recuerda que participaremos en el lote 2.` (saved as a user assertion, not an
+  approved lot selection or reviewed company fact).
+- `Prepara un borrador de propuesta.` (prepares the existing document action;
+  use that action to open/reuse the Office draft).
+
+Plan/memory/proposal preparation requires original `dossier:write`; evaluation
+requires `company:write`. Advice never implicitly creates a plan, task or file.
+Ambiguous, hypothetical, quoted and negated mutation requests fail closed and
+remain a review. Backend plans are not Savia tasks: use the existing task action
+and editor to select a responsible person and date. Office source-key lookup and
+manual edits remain owned by the existing host document action.
+
+The shared expert policy reviews administrative/legal, financial, organizational,
+experience, technical, guarantee, timetable and amendment questions with source
+citations. Missing/expired/unreviewed support is insufficient evidence, never an
+eligibility approval. Company source links require both the selected company and
+its document-evidence association. Pending OCR and unavailable source warnings
+remain visible, including when copying answers.
+
+Planning and evidence inference share per-segment call and owner daily budgets.
+Actual Flue envelope inference is additionally limited to eight calls per saved
+job/day; tool inspection has an eight-call limit too. Receipt-backed retries do
+not repeat completed effects or paid planning. The authoritative answer remains
+the validated saved turn, not the coordinator's acknowledgement. No tool submits
+an offer, signs, sends communications or approves company evidence.
