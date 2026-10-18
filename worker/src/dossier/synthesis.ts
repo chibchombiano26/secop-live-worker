@@ -147,8 +147,17 @@ export async function extractRequirements(
     }
     return output;
   });
-  for (const chunk of fragments) {
+  const inFlight = new Map<string, Promise<z.infer<typeof partSchema>>>();
+  async function extractFragment(chunk: EvidenceChunk) {
     const key = await sha256(`${model.id}:${JSON.stringify(chunk)}`);
+    let pending = inFlight.get(key);
+    if (!pending) {
+      pending = extractFragmentForKey(chunk, key);
+      inFlight.set(key, pending);
+    }
+    return pending;
+  }
+  async function extractFragmentForKey(chunk: EvidenceChunk, key: string) {
     const cached = await cache?.get(key);
     let result: z.infer<typeof partSchema> | undefined;
     let previous: unknown;
@@ -190,8 +199,30 @@ export async function extractRequirements(
     }
     if (!result) throw new DossierError("MODEL_INVALID_OUTPUT", 502, true);
     if (!cached) await cache?.put(key, result);
-    parts.push(result);
+    return result;
   }
+  let next = 0;
+  let failed = false;
+  let failure: unknown;
+  async function visitFragments() {
+    while (!failed && next < fragments.length) {
+      const index = next++;
+      try {
+        parts[index] = await extractFragment(fragments[index]);
+      } catch (error) {
+        if (!failed) {
+          failed = true;
+          failure = error;
+        }
+      }
+    }
+  }
+  // Settle in-flight cache writes before yielding the lease on any failure.
+  // Indexed results retain source order even when inference finishes out of order.
+  await Promise.all(
+    Array.from({ length: Math.min(3, fragments.length) }, visitFragments),
+  );
+  if (failed) throw failure;
   return {
     requirements: parts.flatMap((p) => p.requirements),
     summaries: parts.map((p) => p.summary),
