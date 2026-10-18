@@ -140,3 +140,98 @@ it("does not approve company support whose OCR still needs review", async () => 
     await f.mf.dispose();
   }
 });
+it("evaluates every requirement without model charges when the company has no extracted evidence", async () => {
+  const f = await expertFixture();
+  try {
+    let calls = 0;
+    const result = await assessCompany(
+      f.repo,
+      f.scope.dossierId,
+      "company-a",
+      [],
+      {
+        id: "empty-evidence-test",
+        generate: async () => {
+          calls++;
+          return {
+            status: "meets",
+            reason: "Unsupported profile assertion",
+            missing: [],
+            companyCitations: [],
+          };
+        },
+      },
+      { createTasks: false },
+    );
+    expect(calls).toBe(0);
+    expect(result.findings.map((x) => x.requirementId)).toEqual(["r1"]);
+    expect(
+      result.findings.every((x) => x.status === "insufficient_evidence"),
+    ).toBe(true);
+    expect(result.findings[0].missing.length).toBeGreaterThan(0);
+    expect(await f.repo.all("task")).toEqual([]);
+  } finally {
+    await f.mf.dispose();
+  }
+});
+it("downgrades a cached finding when its company evidence becomes unavailable", async () => {
+  const f = await expertFixture(undefined, true, true);
+  try {
+    const text = "The company provides two software delivery contracts.";
+    const chunk = await f.repo.read<any>("chunk", "fixture-company-chunk");
+    await f.repo.save(
+      "chunk",
+      chunk.id,
+      { ...chunk.value, text },
+      chunk.revision,
+    );
+    let calls = 0;
+    const supportedModel = {
+      id: "evidence-loss-test",
+      generate: async () => {
+        calls++;
+        return {
+          status: "meets",
+          reason: "Two supported contracts",
+          missing: [],
+          companyCitations: [
+            {
+              documentVersionId: "fixture-company-doc",
+              page: 1,
+              excerpt: text,
+            },
+          ],
+        };
+      },
+    };
+    const before = await assessCompany(
+      f.repo,
+      f.scope.dossierId,
+      "company-a",
+      [],
+      supportedModel,
+      { createTasks: false },
+    );
+    expect(before.findings[0].status).toBe("meets");
+    const doc = await f.repo.read<any>("document", "fixture-company-doc");
+    await f.repo.save(
+      "document",
+      doc.id,
+      { ...doc.value, state: "failed" },
+      doc.revision,
+    );
+    const after = await assessCompany(
+      f.repo,
+      f.scope.dossierId,
+      "company-a",
+      [],
+      supportedModel,
+      { createTasks: false },
+    );
+    expect(after.findings[0].status).toBe("insufficient_evidence");
+    expect(after.findings[0].missing.length).toBeGreaterThan(0);
+    expect(calls).toBe(1);
+  } finally {
+    await f.mf.dispose();
+  }
+});

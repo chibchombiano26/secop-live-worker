@@ -6,6 +6,7 @@ import { sha256 } from "../src/dossier/downloads";
 export async function expertFixture(
   message = "Evalúa mi empresa y guarda un plan de preparación",
   selectedCompany = true,
+  companyHasEvidence = false,
 ) {
   const mf = new Miniflare(
     convertV4MiniflareOptions({
@@ -51,6 +52,35 @@ export async function expertFixture(
     { name: "Company A", activities: "Software", facts: [] },
     0,
   );
+  if (companyHasEvidence) {
+    await repo.save(
+      "document",
+      "fixture-company-doc",
+      {
+        dossierId: "company:company-a",
+        name: "Company experience.pdf",
+        state: "ready",
+      },
+      0,
+    );
+    await repo.save(
+      "evidence",
+      "fixture-company-evidence",
+      { companyId: "company-a", documentId: "fixture-company-doc" },
+      0,
+    );
+    await repo.save(
+      "chunk",
+      "fixture-company-chunk",
+      {
+        documentVersionId: "fixture-company-doc",
+        page: 1,
+        index: 0,
+        text: "The company declares one software delivery project.",
+      },
+      0,
+    );
+  }
   await repo.save(
     "report",
     reportId,

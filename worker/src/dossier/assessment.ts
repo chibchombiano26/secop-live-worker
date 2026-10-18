@@ -159,7 +159,17 @@ export async function assessCompany(
       if (!(e instanceof DossierError) || e.code !== "NOT_FOUND") throw e;
     }
     let finding: Finding;
-    if (cached) finding = findingSchema.parse(cached);
+    if (!company.chunks.length) {
+      finding = {
+        status: "insufficient_evidence",
+        reason:
+          "No hay documentos de empresa con texto extraído. Las capacidades declaradas en el perfil no acreditan este requisito.",
+        missing: [
+          "Aportar soporte vigente del requisito indicado y contrastarlo con el original.",
+        ],
+        companyCitations: [],
+      };
+    } else if (cached) finding = findingSchema.parse(cached);
     else {
       const words = new Set(
         req.wording

@@ -114,3 +114,19 @@ job/day; tool inspection has an eight-call limit too. Receipt-backed retries do
 not repeat completed effects or paid planning. The authoritative answer remains
 the validated saved turn, not the coordinator's acknowledgement. No tool submits
 an offer, signs, sends communications or approves company evidence.
+
+## Complete long-document extraction
+
+Requirement extraction visits every original evidence fragment with at most three
+independent model calls in flight. Indexed results retain source order, and each
+fragment keeps its exact document version, original page and citation validation.
+On failure or a model budget boundary, in-flight work settles and valid partial
+cache entries persist before the job yields; the next attempt reuses them. This
+does not increase the configured per-job or owner daily model budget. The joint
+review still consumes the full extracted requirement set.
+
+When the selected company has no extracted supporting evidence, every applicable
+requirement is marked `insufficient_evidence` deterministically, without a model
+call per requirement. Declared profile capabilities never become verified
+compliance, and all requirement IDs remain in the assessment. Selected-lot
+applicability checks still apply.

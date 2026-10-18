@@ -154,7 +154,10 @@ describe("grounded cross-document synthesis", () => {
       },
     };
     const result = await extractRequirements(chunks, model);
-    expect(visited).toEqual(["pliego", "adenda"]);
+    expect([...visited].sort()).toEqual(["adenda", "pliego"]);
+    expect(
+      result.requirements.map((r) => r.citations[0].documentVersionId),
+    ).toEqual(["pliego", "adenda"]);
     expect(result.requirements).toHaveLength(2);
   });
   it("rejects uncited invented requirements instead of treating model text as evidence", async () => {
