@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 interface Env {
   OCR_CONTAINER: DurableObjectNamespace<CpuOcrContainer>;
 }
+const MAX_RANGE_PAGES = 5;
 /** A single private instance bounds aggregate CPU use. No public HTTP route. */
 export class CpuOcrContainer extends DurableObject<Env> {
   private busy = false;
@@ -13,6 +14,33 @@ export class CpuOcrContainer extends DurableObject<Env> {
       return new Response("Not found", { status: 404 });
     if (request.headers.get("content-type") !== "application/pdf")
       return new Response("PDF required", { status: 415 });
+    const startPage = request.headers.get("x-ocr-start-page");
+    const pageCount = request.headers.get("x-ocr-page-count");
+    if ((startPage === null) !== (pageCount === null))
+      return Response.json(
+        { error: "OCR_INVALID_PAGE_RANGE" },
+        { status: 400 },
+      );
+    let validatedRange: { startPage: number; pageCount: number } | undefined;
+    if (startPage !== null && pageCount !== null) {
+      if (!/^[1-9][0-9]*$/.test(startPage) || !/^[1-9][0-9]*$/.test(pageCount))
+        return Response.json(
+          { error: "OCR_INVALID_PAGE_RANGE" },
+          { status: 400 },
+        );
+      const parsedStart = Number(startPage);
+      const parsedCount = Number(pageCount);
+      if (
+        !Number.isSafeInteger(parsedStart) ||
+        !Number.isSafeInteger(parsedCount) ||
+        parsedCount > MAX_RANGE_PAGES
+      )
+        return Response.json(
+          { error: "OCR_INVALID_PAGE_RANGE" },
+          { status: 400 },
+        );
+      validatedRange = { startPage: parsedStart, pageCount: parsedCount };
+    }
     if (this.busy) return Response.json({ error: "OCR_BUSY" }, { status: 429 });
     this.busy = true;
     const container = this.ctx.container!;
@@ -42,6 +70,12 @@ export class CpuOcrContainer extends DurableObject<Env> {
           headers: {
             "content-type": "application/pdf",
             "content-length": String(body.byteLength),
+            ...(validatedRange
+              ? {
+                  "x-ocr-start-page": String(validatedRange.startPage),
+                  "x-ocr-page-count": String(validatedRange.pageCount),
+                }
+              : {}),
           },
           body,
         }),

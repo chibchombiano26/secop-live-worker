@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { readFileSync } from "node:fs";
+import { executeProcessingJob } from "../src/dossier/processing";
 import { processJob } from "../src/dossier/jobs";
 import { DossierError } from "../src/dossier/contracts";
 import { vi } from "vitest";
@@ -90,6 +91,139 @@ describe("persisted owner scoped dossiers and jobs", () => {
     }
   });
 
+  it.each(["OCR_CONTINUING", "OCR_BUSY"])(
+    "yields %s without consuming document failure retries",
+    async (code) => {
+      const job = await a.enqueueJob({
+        kind: "extract",
+        targetId: "long-pdf",
+        key: `yield-${code}`,
+      });
+      await processJob(
+        env,
+        { ownerId: "a", jobId: job.id },
+        async (repo, claimed) => {
+          await repo.checkpointJob(claimed.id, claimed.lease!, {
+            extractedPages: 5,
+            pageCount: 23,
+          });
+          throw new DossierError(code, 202, true);
+        },
+      );
+      const yielded = await a.readJob(job.id);
+      expect(yielded.state).toBe("queued");
+      expect(yielded.attempts).toBe(0);
+      expect(yielded.error).toBeNull();
+      expect(yielded.progress).toMatchObject({
+        extractedPages: 5,
+        pageCount: 23,
+        stage: code === "OCR_BUSY" ? "waiting_ocr" : "ocr_pages",
+      });
+    },
+  );
+
+  it("resumes real owner-scoped R2 batches without publishing partial document evidence", async () => {
+    const dossierId = "CO1.REQ.400";
+    const documentId = "ocr-integration-document";
+    await a.save(
+      "dossier",
+      dossierId,
+      { corpusRevision: 1, documentIds: [documentId] },
+      0,
+    );
+    await a.putFile(
+      documentId,
+      new TextEncoder().encode("%PDF-integration"),
+      "application/pdf",
+    );
+    await a.save(
+      "document",
+      documentId,
+      { dossierId, name: "scan.pdf", state: "pending", fileId: documentId },
+      0,
+    );
+    const starts: number[] = [];
+    const continueOcr = vi.fn().mockResolvedValue(undefined);
+    const processingEnv = {
+      ...env,
+      DOSSIER_QUEUE: { send: continueOcr },
+      AI: { toMarkdown: async () => ({ format: "error" }) },
+      SECOP_OCR: {
+        fetch: async (request: Request) => {
+          const start = Number(request.headers.get("x-ocr-start-page"));
+          starts.push(start);
+          const end = Math.min(start + 4, 7);
+          return Response.json({
+            parserVersion: "test-ocr",
+            pageCount: 7,
+            startPage: start,
+            endPage: end,
+            nextPage: end === 7 ? null : end + 1,
+            complete: end === 7,
+            warnings: [],
+            pages: Array.from({ length: end - start + 1 }, (_, i) => ({
+              page: start + i,
+              text: `Original source page ${start + i}`,
+            })),
+          });
+        },
+      },
+    };
+    const job = await a.enqueueJob({
+      kind: "extract",
+      targetId: documentId,
+      key: "ocr-integration",
+    });
+    await processJob(
+      processingEnv,
+      { ownerId: "a", jobId: job.id },
+      (repo, saved) => executeProcessingJob(repo, saved, processingEnv),
+    );
+    expect(continueOcr).toHaveBeenCalledWith(
+      { ownerId: "a", jobId: job.id },
+      { delaySeconds: 1 },
+    );
+    expect((await a.readJob(job.id)).progress).toMatchObject({
+      extractedPages: 5,
+      pageCount: 7,
+      stage: "ocr_pages",
+    });
+    expect((await a.read<any>("document", documentId)).value.state).toBe(
+      "pending",
+    );
+    expect(
+      (await a.all<any>("chunk")).filter(
+        (c) => c.value.documentVersionId === documentId,
+      ),
+    ).toHaveLength(0);
+    const cacheId = `ocr-pages-v1.${documentId}`;
+    expect(
+      JSON.parse(await (await a.getFile(cacheId))!.text()).pages,
+    ).toHaveLength(5);
+    expect(await b.getFile(cacheId)).toBeNull();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 2000);
+    try {
+      await processJob(
+        processingEnv,
+        { ownerId: "a", jobId: job.id },
+        (repo, saved) => executeProcessingJob(repo, saved, processingEnv),
+      );
+    } finally {
+      clock.mockRestore();
+    }
+    expect(starts).toEqual([1, 6]);
+    expect((await a.readJob(job.id)).state).toBe("succeeded");
+    expect((await a.read<any>("document", documentId)).value.state).toBe(
+      "review_required",
+    );
+    expect(
+      (await a.all<any>("chunk"))
+        .filter((c) => c.value.documentVersionId === documentId)
+        .map((c) => c.value.page)
+        .sort((x, y) => x - y),
+    ).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
   it("deduplicates dossiers and denies record/file access across owners", async () => {
     const d = await a.createOrGetDossier("CO1.REQ.123");
     expect((await a.createOrGetDossier("CO1.REQ.123")).id).toBe(d.id);
@@ -117,14 +251,16 @@ describe("persisted owner scoped dossiers and jobs", () => {
     await b.save("company", "only-b", { name: "B private" }, 0);
 
     expect(
-      (await a.readMany<{ name: string }>("company", [
-        "batch-second",
-        "batch-first",
-      ])).map((record) => record.value.name),
+      (
+        await a.readMany<{ name: string }>("company", [
+          "batch-second",
+          "batch-first",
+        ])
+      ).map((record) => record.value.name),
     ).toEqual(["A second", "A first"]);
     expect(
-      (await b.readMany<{ name: string }>("company", ["batch-first"]))[0]
-        .value.name,
+      (await b.readMany<{ name: string }>("company", ["batch-first"]))[0].value
+        .name,
     ).toBe("B first");
     await expect(a.readMany("company", ["only-b"])).rejects.toMatchObject({
       code: "NOT_FOUND",
@@ -162,7 +298,10 @@ describe("persisted owner scoped dossiers and jobs", () => {
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
-    const counted = new DossierRepository({ ...env, DOSSIER_DB: db }, a.context);
+    const counted = new DossierRepository(
+      { ...env, DOSSIER_DB: db },
+      a.context,
+    );
 
     const records = await counted.readMany<{ id: string }>("company", ids);
     const loadedDocuments = await counted.readMany<{ id: string }>(

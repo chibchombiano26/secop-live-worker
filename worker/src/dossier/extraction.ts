@@ -1,4 +1,9 @@
 import { z } from "zod/v4";
+import {
+  loadOcrCheckpoint,
+  extractOcrPageBatch,
+  type OcrCheckpointStore,
+} from "./ocr-batches";
 import { unzipSync } from "fflate";
 import { DossierError } from "./contracts";
 import {
@@ -212,6 +217,7 @@ export class CpuOcrFallbackProvider implements ExtractionProvider {
   constructor(
     readonly primary: ExtractionProvider,
     readonly service: OcrServiceBinding,
+    readonly checkpoints?: OcrCheckpointStore,
   ) {}
   async extract(
     file: ExtractionFile,
@@ -219,6 +225,17 @@ export class CpuOcrFallbackProvider implements ExtractionProvider {
   ): Promise<ExtractionResult> {
     if (file.mime !== "application/pdf")
       return this.primary.extract(file, signal);
+    const saved = this.checkpoints
+      ? await loadOcrCheckpoint(file, this.checkpoints)
+      : null;
+    if (saved)
+      return extractOcrPageBatch(
+        file,
+        signal,
+        this.service,
+        this.checkpoints!,
+        saved,
+      );
     try {
       const result = await this.primary.extract(file, signal);
       if (!result.warnings.includes("EMPTY_PAGES_REQUIRE_OCR")) return result;
@@ -233,6 +250,14 @@ export class CpuOcrFallbackProvider implements ExtractionProvider {
       )
         throw error;
     }
+    if (this.checkpoints)
+      return extractOcrPageBatch(
+        file,
+        signal,
+        this.service,
+        this.checkpoints,
+        null,
+      );
     signal.throwIfAborted();
     if (file.bytes.length > 25 * 1024 * 1024)
       throw new DossierError("OCR_FILE_LIMIT", 413);
@@ -445,6 +470,20 @@ export async function extractDocument(
     await checkpoint?.();
     await saveExtraction(repo, id, result);
   } catch (e) {
+    if (
+      e instanceof DossierError &&
+      ["OCR_CONTINUING", "OCR_BUSY"].includes(e.code)
+    ) {
+      const current = await repo.read<DocumentVersion>("document", id);
+      if (current.value.state !== "pending")
+        await repo.save(
+          "document",
+          id,
+          { ...current.value, state: "pending" },
+          current.revision,
+        );
+      throw e;
+    }
     const error =
       e instanceof DossierError
         ? e

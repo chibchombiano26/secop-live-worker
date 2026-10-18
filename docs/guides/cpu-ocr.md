@@ -32,11 +32,25 @@ text or empty pages falls back to CPU OCR. An explicitly configured external
 extractor. Original files stay private in R2; temporary container files are
 removed after each request. OCR results preserve 1-based page numbers.
 
-The first version accepts PDFs up to 25 MiB and 20 pages, processes one request
-at a time, and enforces an 80-second subprocess deadline. Busy/startup failures
-are retryable; oversized, encrypted, invalid or timed-out documents remain
-explicit failures rather than partial successful extractions. Larger documents
-need a later durable page-batch implementation or an external extractor.
+The container accepts PDFs up to 25 MiB and processes one request at a time.
+Legacy whole-document requests remain limited to 20 pages. Longer PDFs use
+explicit ranges: each request processes at most five original pages, and the
+total document page count has no 20-page cap. The container separates those
+pages from the original PDF, OCRs only the requested range, and returns the
+original 1-based page numbers and the next page to process. It rejects a range
+if text extraction returns fewer or more pages than requested, so blank pages
+are retained and missing pages cannot be silently skipped. Each request has a
+78-second subprocess deadline. The existing ingestion safety limits (25 MiB source,
+10,000 pages and 8 million extracted characters) still reject excessive documents
+explicitly; they never truncate a successful extraction.
+
+The backend checkpoints each completed page batch before scheduling the next
+range. Checkpoints are private R2 objects scoped to the authenticated owner,
+document and source-byte hash. Delayed queue delivery continues the next range
+promptly, with the cron outbox as recovery if a send fails. Retries resume from the next unprocessed original page, and a document
+is reported complete only when the final page has been processed. Busy/startup
+failures remain retryable; oversized, encrypted, invalid or timed-out documents
+remain explicit failures rather than partial successful extractions.
 
 Recovered documents clear their old error, invalidate the partial report and
 schedule synthesis with a new corpus revision. Old conversations retain their

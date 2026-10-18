@@ -1,6 +1,20 @@
 import { ZodError } from "zod/v4";
 import { DossierError, PRIVATE_SCOPES } from "./contracts";
 import { DossierRepository, type DossierEnv, type Job } from "./repository";
+/** Keep typed failures serializable across Cloudflare Workflow step boundaries. */
+export async function processingStepResult(execute: () => Promise<void>) {
+  try {
+    await execute();
+    return null;
+  } catch (error) {
+    if (!(error instanceof DossierError)) throw error;
+    return {
+      code: error.code,
+      status: error.status,
+      retryable: error.retryable,
+    };
+  }
+}
 export async function dispatchJobs(env: DossierEnv, now = Date.now()) {
   if (!env.DOSSIER_DB || !env.DOSSIER_QUEUE) return;
   await env.DOSSIER_DB.prepare(
@@ -71,6 +85,25 @@ export async function runClaimedJob(
           : {}),
       }),
     );
+    if (["OCR_CONTINUING", "OCR_BUSY"].includes(failure.code)) {
+      const busy = failure.code === "OCR_BUSY";
+      await repo.yieldJob(
+        job.id,
+        job.lease!,
+        busy ? 30000 : 1000,
+        busy ? "waiting_ocr" : "ocr_pages",
+      );
+      // Continue promptly; the persisted outbox and cron recover a failed send.
+      try {
+        await repo.env.DOSSIER_QUEUE?.send(
+          { ownerId: repo.context.ownerId, jobId: job.id },
+          { delaySeconds: busy ? 30 : 1 },
+        );
+      } catch {
+        /* The saved job remains dispatchable. */
+      }
+      return;
+    }
     if (failure.code === "MODEL_BUDGET_EXCEEDED") {
       await repo.yieldJob(job.id, job.lease!, 1000, "continuing");
       return;

@@ -8,7 +8,8 @@ import { TenderStudy } from "./agents/tender-study";
 import backend from "./index";
 import { DossierRepository, type Job } from "./dossier/repository";
 import { PRIVATE_SCOPES, privateContextSchema } from "./dossier/contracts";
-import { runClaimedJob } from "./dossier/jobs";
+import { DossierError } from "./dossier/contracts";
+import { processingStepResult, runClaimedJob } from "./dossier/jobs";
 import { executeProcessingJob, type ProcessingEnv } from "./dossier/processing";
 import {
   agentScopeId,
@@ -40,14 +41,21 @@ export class SecopDossierWorkflow extends WorkflowEntrypoint<
     if (!job) return { skipped: true };
     await runClaimedJob(repo, job, async (r, j) => {
       if (j.kind !== "chat") {
-        await step.do(
+        const failure = await step.do(
           `process ${j.kind}`,
           {
             timeout: "15 minutes",
             retries: { limit: 0, delay: "1 second", backoff: "constant" },
           },
-          () => executeProcessingJob(r, j, this.env),
+          () =>
+            processingStepResult(() => executeProcessingJob(r, j, this.env)),
         );
+        if (failure)
+          throw new DossierError(
+            failure.code,
+            failure.status,
+            failure.retryable,
+          );
         return;
       }
       const request = (await r.read<ChatInput>("message", j.targetId)).value;
