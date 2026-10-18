@@ -86,6 +86,43 @@ type CompactRequirement = [
 function invalidOutput(): DossierError {
   return new DossierError("MODEL_INVALID_OUTPUT", 502, true);
 }
+function logInvalidGroupSchema(groupIndex: number, error: z.ZodError) {
+  console.error(
+    JSON.stringify({
+      event: "joint_review_invalid_output",
+      groupIndex,
+      category: "schema",
+      issues: error.issues.map((issue) => ({
+        path: issue.path.filter(
+          (part): part is string | number =>
+            typeof part === "string" || typeof part === "number",
+        ),
+        type: issue.code,
+      })),
+    }),
+  );
+}
+function logInvalidGroupCandidate(
+  groupIndex: number,
+  candidate: Candidate,
+  group: Group,
+) {
+  const indices = group.indices;
+  console.error(
+    JSON.stringify({
+      event: "joint_review_invalid_output",
+      groupIndex,
+      category: candidate.left === candidate.right
+        ? "candidate_self"
+        : "candidate_scope",
+      left: candidate.left,
+      right: candidate.right,
+      allowedIndexMin: Math.min(...indices),
+      allowedIndexMax: Math.max(...indices),
+      allowedIndexCount: indices.length,
+    }),
+  );
+}
 function requestChars(input: Parameters<ModelProvider["generate"]>[0]) {
   return JSON.stringify(input).length;
 }
@@ -318,7 +355,9 @@ export async function reviewJointRequirements(
       const raw = await model.generate(input);
       try {
         result = reviewSchema.parse(raw);
-      } catch {
+      } catch (error) {
+        if (error instanceof z.ZodError)
+          logInvalidGroupSchema(groupIndex, error);
         throw invalidOutput();
       }
       for (const candidate of result.candidates) {
@@ -326,8 +365,10 @@ export async function reviewJointRequirements(
           candidate.left === candidate.right ||
           !group.indices.includes(candidate.left) ||
           !group.indices.includes(candidate.right)
-        )
+        ) {
+          logInvalidGroupCandidate(groupIndex, candidate, group);
           throw invalidOutput();
+        }
       }
       await cache.put(key, result);
       reviewRequests++;
@@ -390,13 +431,20 @@ export async function reviewJointRequirements(
   let verificationRequests = 0;
   let maxRequestChars = plan.maxRequestChars;
   const reviewCandidates = [...candidates.values()];
-  for (let index = 0; index < reviewCandidates.length; index++) {
+  const verificationResults: Array<{
+    candidate: Candidate;
+    verified: z.infer<ReturnType<typeof verificationSchemaForIds>>;
+    citations: Citation[];
+  }> = new Array(reviewCandidates.length);
+  let verificationCompleted = 0;
+  let verificationProgressWrites = Promise.resolve();
+  await checkpoint?.({
+    phase: "joint_verification",
+    candidatesCompleted: 0,
+    candidatesTotal: reviewCandidates.length,
+  });
+  async function verifyCandidate(index: number) {
     const candidate = reviewCandidates[index];
-    await checkpoint?.({
-      phase: "joint_verification",
-      candidatesCompleted: index,
-      candidatesTotal: reviewCandidates.length,
-    });
     const left = requirements[candidate.left];
     const right = requirements[candidate.right];
     const evidence: Array<{
@@ -530,40 +578,74 @@ export async function reviewJointRequirements(
         };
       }
     }
-    if (verified.decision === "amendment") {
-      if (
-        verified.previous === undefined ||
+    if (
+      verified.decision === "amendment" &&
+      (verified.previous === undefined ||
         verified.replacement === undefined ||
         verified.previous === verified.replacement ||
         ![candidate.left, candidate.right].includes(verified.previous) ||
-        ![candidate.left, candidate.right].includes(verified.replacement)
-      )
-        throw invalidOutput();
+        ![candidate.left, candidate.right].includes(verified.replacement))
+    )
+      throw invalidOutput();
+    if (cached === null) await cache.put(key, verified);
+    verificationResults[index] = { candidate, verified, citations };
+    const count = ++verificationCompleted;
+    verificationProgressWrites = verificationProgressWrites.then(async () => {
+      await checkpoint?.({
+        phase: "joint_verification",
+        candidatesCompleted: count,
+        candidatesTotal: reviewCandidates.length,
+      });
+    });
+    await verificationProgressWrites;
+  }
+  let nextCandidate = 0;
+  let verificationFailed = false;
+  let verificationFailure: unknown;
+  async function visitCandidates() {
+    while (!verificationFailed && nextCandidate < reviewCandidates.length) {
+      const index = nextCandidate++;
+      try {
+        await verifyCandidate(index);
+      } catch (error) {
+        if (!verificationFailed) {
+          verificationFailed = true;
+          verificationFailure = error;
+        }
+      }
+    }
+  }
+  // Complete all started verification and cache writes before yielding. The
+  // result arrays are filled by index so completion timing cannot reorder them.
+  await Promise.all(
+    Array.from(
+      { length: Math.min(8, reviewCandidates.length) },
+      visitCandidates,
+    ),
+  );
+  if (verificationFailed) {
+    await verificationProgressWrites.catch(() => undefined);
+    throw verificationFailure;
+  }
+  for (const { candidate, verified, citations } of verificationResults) {
+    if (verified.decision === "amendment")
       amendments.push({
-        previous: verified.previous,
-        replacement: verified.replacement,
+        previous: verified.previous!,
+        replacement: verified.replacement!,
         reason: verified.reason,
         citations,
       });
-    }
-    const review = {
+    candidateReviews.push({
       left: candidate.left,
       right: candidate.right,
       decision: verified.decision,
       reason: verified.reason,
       citations,
-    };
-    candidateReviews.push(review);
+    });
     if (verified.decision === "conflict")
       conflicts.push(
         `Conflicto verificado entre requisitos: ${verified.reason}`,
       );
-    if (cached === null) await cache.put(key, verified);
-    await checkpoint?.({
-      phase: "joint_verification",
-      candidatesCompleted: index + 1,
-      candidatesTotal: reviewCandidates.length,
-    });
   }
   const result: JointReviewResult = {
     summaries: [...summaries],

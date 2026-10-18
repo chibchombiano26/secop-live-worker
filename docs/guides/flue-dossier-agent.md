@@ -109,6 +109,8 @@ its document-evidence association. Pending OCR and unavailable source warnings
 remain visible, including when copying answers.
 
 Planning and evidence inference share per-segment call and owner daily budgets.
+The configured model limits are 64 calls per job and 1,500 calls per owner per
+day; concurrency does not increase either budget.
 Actual Flue envelope inference is additionally limited to eight calls per saved
 job/day; tool inspection has an eight-call limit too. Receipt-backed retries do
 not repeat completed effects or paid planning. The authoritative answer remains
@@ -125,12 +127,14 @@ cache entries persist before the job yields; the next attempt reuses them. This
 does not increase the configured per-job or owner daily model budget. The joint
 review still consumes the full extracted requirement set.
 
-The joint comparison plan also executes at most eight independent review groups
-concurrently, without removing any planned requirement pairs. Completed groups
-are cached before progress is acknowledged. On failure all in-flight work settles
-before resume, and results are merged in original plan order so completion timing
-cannot change candidate selection. Candidate evidence verification remains a
-separate step with the existing citation and amendment rules.
+The joint comparison plan and, after that phase has fully settled, candidate
+evidence verification each execute at most eight independent calls concurrently.
+The plan retains every planned requirement pair, and verification retains every
+candidate. Completed group and verification results are cached before progress is
+acknowledged. On failure, no more work is scheduled and all in-flight work settles
+before resume; results are merged in original plan and candidate order so
+completion timing cannot change candidate selection, conflicts, or amendments.
+Verification retains the existing both-side citation and amendment rules.
 
 If a model response truncates, extraction divides that source fragment into two
 smaller sections with a 200-character overlap. Original version and page metadata
