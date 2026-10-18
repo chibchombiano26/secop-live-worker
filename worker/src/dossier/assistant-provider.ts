@@ -300,51 +300,25 @@ export async function runAssistantProvider(
         ...(document.canOpen ? { canOpen: true } : {}),
       });
     }
-    if (
-      turn.value.checklist &&
-      turn.id === latestChecklistTurnId &&
-      turn.value.checklist.items.length > 1000
-    )
-      throw new DossierError("TASK_SUGGESTIONS_TOO_LARGE", 413);
-    messages.push({
-      id: `${turn.id}:user`,
-      role: "user",
-      text: turn.value.userMessage,
-    });
-    messages.push({
-      id: turn.id,
-      role: "assistant",
-      text: [
-        turn.value.expert?.summary,
-        turn.value.checklist
-          ? renderExhaustiveChecklist(turn.value.checklist, {
-              includeSourceExcerpts: false,
-            })
-          : turn.value.answer,
-      ]
-        .filter(Boolean)
-        .join("\n\n"),
-      citations,
-      stale: turn.value.stale,
-      insufficientEvidence:
-        !turn.value.checklist && turn.value.insufficientEvidence,
-      ...(turn.value.checklist && turn.id === latestChecklistTurnId
-        ? {
-            taskSuggestions: turn.value.checklist.items
-              .filter(
-                (item) =>
-                  !turn.value.expert?.planId ||
-                  expertState.stale ||
-                  expertState.plan?.id !== turn.value.expert.planId ||
-                  expertState.plan.value.items.some(
-                    (p) => p.requirementId === item.requirementId,
-                  ),
-              )
-              .map((item) => {
-                const suffix = `\nReferencia: ${item.reference}. Categoría: ${item.category}.`;
-                if (item.wording.length + suffix.length > 20_000)
-                  throw new DossierError("TASK_SUGGESTION_TOO_LARGE", 413);
-                return {
+    const mappedSuggestions =
+      turn.value.checklist && turn.id === latestChecklistTurnId
+        ? turn.value.checklist.items
+            .filter(
+              (item) =>
+                !turn.value.expert?.planId ||
+                expertState.stale ||
+                expertState.plan?.id !== turn.value.expert.planId ||
+                expertState.plan.value.items.some(
+                  (p) => p.requirementId === item.requirementId,
+                ),
+            )
+            .map((item) => {
+              const suffix = `\nReferencia: ${item.reference}. Categoría: ${item.category}.`;
+              if (item.wording.length + suffix.length > 20_000)
+                throw new DossierError("TASK_SUGGESTION_TOO_LARGE", 413);
+              return {
+                reference: item.reference,
+                suggestion: {
                   id: item.requirementId || item.reference,
                   title: item.wording.slice(0, 200),
                   description: `${item.wording}${suffix}`,
@@ -361,8 +335,45 @@ export async function runAssistantProvider(
                     .filter(
                       (citationId): citationId is string => citationId !== null,
                     ),
-                };
-              }),
+                },
+              };
+            })
+        : null;
+    const groupedSuggestions =
+      mappedSuggestions && mappedSuggestions.length > 1000
+        ? bundleTaskSuggestions(mappedSuggestions)
+        : null;
+    messages.push({
+      id: `${turn.id}:user`,
+      role: "user",
+      text: turn.value.userMessage,
+    });
+    messages.push({
+      id: turn.id,
+      role: "assistant",
+      text: [
+        turn.value.expert?.summary,
+        turn.value.checklist
+          ? renderExhaustiveChecklist(turn.value.checklist, {
+              includeSourceExcerpts: false,
+            })
+          : turn.value.answer,
+        groupedSuggestions
+          ? "Las tareas pendientes se agruparon para facilitar su gestión; la lista completa de requisitos individuales permanece disponible en la lista de verificación."
+          : null,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+      citations,
+      stale: turn.value.stale,
+      insufficientEvidence:
+        !turn.value.checklist && turn.value.insufficientEvidence,
+      ...(turn.value.checklist && turn.id === latestChecklistTurnId
+        ? {
+            taskSuggestions:
+              groupedSuggestions ??
+              mappedSuggestions?.map(({ suggestion }) => suggestion) ??
+              [],
           }
         : {}),
     });
@@ -430,7 +441,78 @@ export async function runAssistantProvider(
       label: `${context.dossierId} · ${selectedCompany?.value.name ?? "Solo la licitación"} · ${analysisComplete ? "Análisis conjunto completado" : "Análisis conjunto pendiente"} · ${coverage?.indexed ?? 0}/${coverage?.total ?? 0} documentos · ${pending} pendientes · ${review} ${review === 1 ? "extracción" : "extracciones"} por revisar`,
     },
   };
-  if (new TextEncoder().encode(JSON.stringify(result)).length > 900_000)
+  if (new TextEncoder().encode(JSON.stringify(result)).length > 1_900_000)
     throw new DossierError("ASSISTANT_HISTORY_TOO_LARGE", 413);
   return result;
+}
+
+function bundleTaskSuggestions(
+  items: Array<{
+    reference: string;
+    suggestion: {
+      id: string;
+      title: string;
+      description: string;
+      citationIds: string[];
+    };
+  }>,
+) {
+  const bundles: Array<{
+    id: string;
+    title: string;
+    description: string;
+    citationIds: string[];
+  }> = [];
+  let current: typeof items = [];
+  let currentDescription = "";
+  let currentCitations = new Set<string>();
+  const flush = () => {
+    if (current.length === 0) return;
+    const firstReference = current[0].reference;
+    const lastReference = current[current.length - 1].reference;
+    const title = `Verificar requisitos ${firstReference}–${lastReference}`;
+    if (title.length > 200)
+      throw new DossierError("TASK_SUGGESTIONS_TOO_LARGE", 413);
+    bundles.push({
+      id: `requirement-group.${String(bundles.length + 1).padStart(3, "0")}`,
+      title,
+      description: currentDescription,
+      citationIds: [...currentCitations],
+    });
+    current = [];
+    currentDescription = "";
+    currentCitations = new Set();
+  };
+
+  for (const item of items) {
+    const description = current.length
+      ? `${currentDescription}\n\n---\n\n${item.suggestion.description}`
+      : item.suggestion.description;
+    const citations = new Set([
+      ...currentCitations,
+      ...item.suggestion.citationIds,
+    ]);
+    if (
+      description.length > 20_000 ||
+      current.length >= 10 ||
+      citations.size > 1000
+    ) {
+      flush();
+      current.push(item);
+      currentDescription = item.suggestion.description;
+      currentCitations = new Set(item.suggestion.citationIds);
+      if (currentDescription.length > 20_000 || currentCitations.size > 1000)
+        throw new DossierError("TASK_SUGGESTIONS_TOO_LARGE", 413);
+    } else {
+      current.push(item);
+      currentDescription = description;
+      currentCitations = citations;
+    }
+    if (bundles.length > 1000)
+      throw new DossierError("TASK_SUGGESTIONS_TOO_LARGE", 413);
+  }
+  flush();
+  if (bundles.length > 1000)
+    throw new DossierError("TASK_SUGGESTIONS_TOO_LARGE", 413);
+  return bundles;
 }

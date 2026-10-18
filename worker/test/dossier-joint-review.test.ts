@@ -24,6 +24,58 @@ function cache() {
 }
 
 describe("reviewJointRequirements", () => {
+  it("preserves complete aggregate reviews larger than one model response", async () => {
+    const requirements = Array.from({ length: 20 }, (_, i) =>
+      req(`Requirement ${i}`, `doc-${i}`),
+    );
+    const candidates = requirements
+      .flatMap((_, left) =>
+        requirements.slice(left + 1).map((_, offset) => ({
+          left,
+          right: left + offset + 1,
+          kind: "conflict" as const,
+          reason: "Compare the original obligations.",
+        })),
+      )
+      .slice(0, 150);
+    const store = cache();
+    let calls = 0;
+    const model = {
+      id: "large-complete-review",
+      generate: async (input: any) => {
+        calls++;
+        return input.purpose === "joint_requirement_review"
+          ? { summary: "Complete source comparison.", candidates }
+          : {
+              decision: "unconfirmed",
+              reason: "Further source verification is required. ".repeat(30),
+              citationIds: input.outputSchema.properties.citationIds.items.enum,
+            };
+      },
+    };
+    const result = await reviewJointRequirements(
+      requirements,
+      model,
+      {},
+      store,
+    );
+    expect(JSON.stringify(result).length).toBeGreaterThan(200_000);
+    expect(result.candidateReviews).toHaveLength(150);
+    expect(result.metrics.completedVerifications).toBe(150);
+    expect(
+      result.candidateReviews.map(({ left, right }) => [left, right]),
+    ).toEqual(candidates.map(({ left, right }) => [left, right]));
+    const completedCalls = calls;
+    const resumed = await reviewJointRequirements(
+      requirements,
+      model,
+      {},
+      store,
+    );
+    expect(calls).toBe(completedCalls);
+    expect(resumed.candidateReviews).toEqual(result.candidateReviews);
+  });
+
   it("compares every requirement and uses original quotes to verify both sides", async () => {
     const requirements = [
       req("Entregar antes del 10 de mayo", "doc-a"),
@@ -222,13 +274,14 @@ describe("reviewJointRequirements", () => {
     );
     const observed = new Set<string>();
     const reviewInputs: any[] = [];
-    let active = 0, maximum = 0;
+    let active = 0,
+      maximum = 0;
     const model = {
       id: "pair-coverage-model",
       generate: async (input: any) => {
         active++;
         maximum = Math.max(maximum, active);
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise((resolve) => setTimeout(resolve, 10));
         active--;
         if (input.purpose === "joint_requirement_review") {
           reviewInputs.push(input);
@@ -264,7 +317,8 @@ describe("reviewJointRequirements", () => {
       index <= bounds.maximum;
     for (const input of reviewInputs) {
       const indices = input.context.requirements.map((row: any[]) => row[0]);
-      const properties = input.outputSchema.properties.candidates.items.properties;
+      const properties =
+        input.outputSchema.properties.candidates.items.properties;
       const left = properties.left;
       const right = properties.right;
       expect(Number.isInteger(left.minimum)).toBe(true);
@@ -549,9 +603,9 @@ describe("reviewJointRequirements", () => {
 
     expect(maximumVerifications).toBe(8);
     expect(phaseOverlap).toBe(false);
-    expect(result.candidateReviews.map(({ left, right }) => [left, right])).toEqual(
-      candidates.map(({ left, right }) => [left, right]),
-    );
+    expect(
+      result.candidateReviews.map(({ left, right }) => [left, right]),
+    ).toEqual(candidates.map(({ left, right }) => [left, right]));
     expect(result.candidateReviews.map(({ reason }) => reason)).toEqual(
       candidates.map((_, index) => `Pendiente ${index}`),
     );
@@ -603,7 +657,12 @@ describe("reviewJointRequirements", () => {
     expect(store.values.size).toBe(8); // One group and seven verification results.
 
     failFirstPair = false;
-    const resumed = await reviewJointRequirements(requirements, model, {}, store);
+    const resumed = await reviewJointRequirements(
+      requirements,
+      model,
+      {},
+      store,
+    );
     expect(verificationCalls).toBe(11);
     expect(successfulPairs.size).toBe(10);
     expect(repeatedSuccessfulPairs).toEqual([]);
@@ -666,26 +725,34 @@ describe("reviewJointRequirements", () => {
     const model = {
       id: "parallel-resume",
       generate: async (input: any) => {
-        const group = JSON.stringify(input.context.requirements.map((r: any[]) => r[0]));
+        const group = JSON.stringify(
+          input.context.requirements.map((r: any[]) => r[0]),
+        );
         const call = ++calls;
         if (successfulGroups.has(group)) repeatedGroups.push(group);
         if (failing && call === 1) {
-          await new Promise(resolve => setTimeout(resolve, 1));
+          await new Promise((resolve) => setTimeout(resolve, 1));
           throw new Error("temporary inference failure");
         }
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise((resolve) => setTimeout(resolve, 10));
         successfulGroups.add(group);
         return { summary: "Completed group", candidates: [] };
       },
     };
-    await expect(reviewJointRequirements(requirements, model, {}, store))
-      .rejects.toThrow("temporary inference failure");
+    await expect(
+      reviewJointRequirements(requirements, model, {}, store),
+    ).rejects.toThrow("temporary inference failure");
     expect(calls).toBe(8);
     expect(store.values.size).toBe(7);
     failing = false;
-    const resumed = await reviewJointRequirements(requirements, model, {}, store);
+    const resumed = await reviewJointRequirements(
+      requirements,
+      model,
+      {},
+      store,
+    );
     expect(repeatedGroups).toEqual([]);
-    expect(resumed.metrics.comparedPairs).toBe(24 * 23 / 2);
+    expect(resumed.metrics.comparedPairs).toBe((24 * 23) / 2);
     expect(successfulGroups.size).toBe(resumed.metrics.reviewGroups);
   });
 

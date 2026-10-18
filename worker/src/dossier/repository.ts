@@ -1,4 +1,5 @@
 import { DossierError, type PrivateContext } from "./contracts";
+import { sha256 } from "./downloads";
 export type DossierEnv = {
   DOSSIER_DB?: D1Database;
   DOSSIER_FILES?: R2Bucket;
@@ -50,6 +51,72 @@ const jobColumns =
   "id,kind,target_id AS targetId,state,attempts,lease,lease_until AS leaseUntil,progress,error";
 const READ_MANY_CHUNK_SIZE = 80;
 const MAX_READ_MANY_IDS = 5000;
+const MAX_RECORD_CHARS = 500000;
+const MAX_AGGREGATE_BYTES = 20000000;
+const AGGREGATE_POINTER_KEY = "__saviaAggregateBlob";
+const AGGREGATE_KINDS = new Set<EntityKind>([
+  "report",
+  "assessment",
+  "message",
+]);
+const AGGREGATE_INDEX_FIELDS = [
+  "documentVersionId",
+  "dossierId",
+  "companyId",
+  "assessmentId",
+  "conversationId",
+  "hash",
+] as const;
+type AggregatePointer = {
+  version: 1;
+  kind: "report" | "assessment" | "message";
+  key: string;
+  length: number;
+  sha256: string;
+};
+function aggregatePointer(
+  value: unknown,
+  kind: EntityKind,
+): AggregatePointer | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const pointer = (value as Record<string, unknown>)[AGGREGATE_POINTER_KEY];
+  if (!pointer || typeof pointer !== "object" || Array.isArray(pointer))
+    return null;
+  const candidate = pointer as Record<string, unknown>;
+  const prefix = `${kind}-v1.`;
+  if (
+    candidate.version !== 1 ||
+    candidate.kind !== kind ||
+    typeof candidate.key !== "string" ||
+    !new RegExp(`^${prefix}[a-f0-9]{64}$`).test(candidate.key) ||
+    !Number.isSafeInteger(candidate.length) ||
+    (candidate.length as number) < 0 ||
+    (candidate.length as number) > MAX_AGGREGATE_BYTES ||
+    typeof candidate.sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(candidate.sha256) ||
+    candidate.sha256 !== candidate.key.slice(prefix.length)
+  )
+    return null;
+  return candidate as AggregatePointer;
+}
+function isAggregateValue(kind: EntityKind, value: unknown) {
+  return (
+    AGGREGATE_KINDS.has(kind) &&
+    !!value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.hasOwn(value, AGGREGATE_POINTER_KEY)
+  );
+}
+function storedRecordBytes(kind: EntityKind, serialized: string) {
+  const value = JSON.parse(serialized) as unknown;
+  if (isAggregateValue(kind, value)) {
+    const pointer = aggregatePointer(value, kind);
+    if (!pointer) throw new DossierError("AGGREGATE_BLOB_CORRUPT", 500);
+    return pointer.length;
+  }
+  return new TextEncoder().encode(serialized).byteLength;
+}
 export class DossierRepository {
   readonly db: D1Database;
   readonly bucket: R2Bucket;
@@ -76,7 +143,115 @@ export class DossierRepository {
         updatedAt: number;
       }>();
     if (!row) throw new DossierError("NOT_FOUND", 404);
-    return { ...row, value: JSON.parse(row.value) as T };
+    return {
+      ...row,
+      value: (await this.hydrate(kind, JSON.parse(row.value))) as T,
+    };
+  }
+  private async hydrate(kind: EntityKind, value: unknown) {
+    if (!isAggregateValue(kind, value)) return value;
+    const pointer = aggregatePointer(value, kind);
+    if (!pointer) throw new DossierError("AGGREGATE_BLOB_CORRUPT", 500);
+    const head = await this.headFile(pointer.key);
+    if (!head) throw new DossierError("AGGREGATE_BLOB_MISSING", 500);
+    if (head.size !== pointer.length || head.size > MAX_AGGREGATE_BYTES)
+      throw new DossierError("AGGREGATE_BLOB_CORRUPT", 500);
+    const file = await this.getFile(pointer.key);
+    if (!file) throw new DossierError("AGGREGATE_BLOB_MISSING", 500);
+    if (file.size !== pointer.length || file.size > MAX_AGGREGATE_BYTES)
+      throw new DossierError("AGGREGATE_BLOB_CORRUPT", 500);
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(await file.arrayBuffer());
+    } catch {
+      throw new DossierError("AGGREGATE_BLOB_CORRUPT", 500);
+    }
+    if (
+      bytes.byteLength !== pointer.length ||
+      (await sha256(bytes)) !== pointer.sha256
+    )
+      throw new DossierError("AGGREGATE_BLOB_CORRUPT", 500);
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      const hydrated = JSON.parse(text) as unknown;
+      if (!hydrated || typeof hydrated !== "object" || Array.isArray(hydrated))
+        throw new Error("invalid aggregate payload");
+      const pointerRecord = value as Record<string, unknown>;
+      const payloadRecord = hydrated as Record<string, unknown>;
+      for (const field of AGGREGATE_INDEX_FIELDS) {
+        const fieldValue = payloadRecord[field];
+        const shouldIndex =
+          fieldValue === null ||
+          typeof fieldValue === "string" ||
+          typeof fieldValue === "number" ||
+          typeof fieldValue === "boolean";
+        if (
+          shouldIndex !== Object.hasOwn(pointerRecord, field) ||
+          (shouldIndex && pointerRecord[field] !== fieldValue)
+        )
+          throw new Error("invalid aggregate index");
+      }
+      return hydrated;
+    } catch {
+      throw new DossierError("AGGREGATE_BLOB_CORRUPT", 500);
+    }
+  }
+  private async serializeRecord(kind: EntityKind, value: unknown) {
+    let serialized = JSON.stringify(value);
+    if (typeof serialized !== "string")
+      throw new DossierError("INVALID_RECORD", 400);
+    if (serialized.length > MAX_RECORD_CHARS && AGGREGATE_KINDS.has(kind)) {
+      const aggregateKind = kind as AggregatePointer["kind"];
+      const bytes = new TextEncoder().encode(serialized);
+      if (bytes.byteLength > MAX_AGGREGATE_BYTES)
+        throw new DossierError("RECORD_TOO_LARGE", 413);
+      const digest = await sha256(bytes);
+      const key = `${aggregateKind}-v1.${digest}`;
+      const existing = await this.getFile(key);
+      if (existing) {
+        if (
+          existing.size !== bytes.byteLength ||
+          existing.size > MAX_AGGREGATE_BYTES
+        )
+          throw new DossierError("AGGREGATE_BLOB_CORRUPT", 500);
+        const existingBytes = new Uint8Array(await existing.arrayBuffer());
+        if (
+          existingBytes.byteLength !== bytes.byteLength ||
+          (await sha256(existingBytes)) !== digest
+        )
+          throw new DossierError("AGGREGATE_BLOB_CORRUPT", 500);
+      } else {
+        await this.putFile(key, bytes, "application/json");
+      }
+      const source =
+        value && typeof value === "object" && !Array.isArray(value)
+          ? (value as Record<string, unknown>)
+          : {};
+      const index: Record<string, string | number | boolean | null> = {};
+      for (const field of AGGREGATE_INDEX_FIELDS) {
+        const fieldValue = source[field];
+        if (
+          fieldValue === null ||
+          typeof fieldValue === "string" ||
+          typeof fieldValue === "number" ||
+          typeof fieldValue === "boolean"
+        )
+          index[field] = fieldValue;
+      }
+      serialized = JSON.stringify({
+        ...index,
+        [AGGREGATE_POINTER_KEY]: {
+          version: 1,
+          kind: aggregateKind,
+          key,
+          length: bytes.byteLength,
+          sha256: digest,
+        } satisfies AggregatePointer,
+      });
+    }
+    if (serialized.length > MAX_RECORD_CHARS)
+      throw new DossierError("RECORD_TOO_LARGE", 413);
+    return serialized;
   }
   async readMany<T>(
     kind: EntityKind,
@@ -91,7 +266,10 @@ export class DossierRepository {
     if (!ids.length) return [];
 
     const requestedIds = [...new Set(ids)];
-    const found = new Map<string, Stored<T>>();
+    const found = new Map<
+      string,
+      Omit<Stored<T>, "value"> & { value: string }
+    >();
     let size = 0;
     for (
       let offset = 0;
@@ -112,19 +290,122 @@ export class DossierRepository {
           updatedAt: number;
         }>();
       for (const row of rows.results) {
-        size += row.value.length;
-        if (size > 20000000)
+        size += storedRecordBytes(kind, row.value);
+        if (size > MAX_AGGREGATE_BYTES)
           throw new DossierError("CORPUS_CAPACITY_LIMIT", 413);
-        found.set(row.id, { ...row, value: JSON.parse(row.value) as T });
+        found.set(row.id, row);
       }
     }
 
     if (!options.allowMissing && requestedIds.some((id) => !found.has(id)))
       throw new DossierError("NOT_FOUND", 404);
-    return ids.flatMap((id) => {
-      const record = found.get(id);
-      return record ? [record] : [];
+    const hydrated = new Map<string, Promise<T>>();
+    return Promise.all(
+      ids.flatMap((id) => {
+        const record = found.get(id);
+        if (!record) return [];
+        let value = hydrated.get(id);
+        if (!value) {
+          value = this.hydrate(kind, JSON.parse(record.value)).then(
+            (result) => result as T,
+          );
+          hydrated.set(id, value);
+        }
+        return [value.then((result) => ({ ...record, value: result }))];
+      }),
+    );
+  }
+  async readAnalysisCache(): Promise<Stored<unknown>[]> {
+    const rows = await this.db
+      .prepare(
+        "SELECT id FROM dossier_records WHERE owner_id=? AND kind='report' AND (substr(id,1,5)='part.' OR substr(id,1,6)='joint.') ORDER BY id LIMIT 5001",
+      )
+      .bind(this.context.ownerId)
+      .all<{ id: string }>();
+    if (rows.results.length > 5000)
+      throw new DossierError("REPORT_CACHE_CAPACITY_LIMIT", 413);
+    return this.readMany(
+      "report",
+      rows.results.map((row) => row.id),
+    );
+  }
+  async upsertMany<T>(
+    kind: EntityKind,
+    entries: Array<{ id: string; value: T }>,
+  ): Promise<void> {
+    if (
+      kind !== "requirement" ||
+      !Array.isArray(entries) ||
+      entries.length > MAX_READ_MANY_IDS ||
+      entries.some(
+        (entry) =>
+          !entry ||
+          typeof entry.id !== "string" ||
+          !entry.id ||
+          entry.id.length > 200,
+      ) ||
+      new Set(entries.map((entry) => entry.id)).size !== entries.length
+    )
+      throw new DossierError("INVALID_BATCH", 400);
+    if (!entries.length) return;
+
+    const serialized = entries.map((entry) => JSON.stringify(entry.value));
+    if (
+      serialized.some(
+        (value) => typeof value !== "string" || value.length > MAX_RECORD_CHARS,
+      )
+    )
+      throw new DossierError("RECORD_TOO_LARGE", 413);
+    const inputBytes = serialized.reduce(
+      (total, value) => total + new TextEncoder().encode(value!).byteLength,
+      0,
+    );
+    if (inputBytes > MAX_AGGREGATE_BYTES)
+      throw new DossierError("CORPUS_CAPACITY_LIMIT", 413);
+
+    const current = await this.readMany<T>(
+      kind,
+      entries.map((entry) => entry.id),
+      { allowMissing: true },
+    );
+    const byId = new Map(current.map((record) => [record.id, record]));
+    const timestamp = this.now();
+    const statements = entries.map((entry, index) => {
+      const existing = byId.get(entry.id);
+      return existing
+        ? this.db
+            .prepare(
+              "UPDATE dossier_records SET value=?,revision=revision+1,updated_at=? WHERE owner_id=? AND kind=? AND id=? AND revision=?",
+            )
+            .bind(
+              serialized[index],
+              timestamp,
+              this.context.ownerId,
+              kind,
+              entry.id,
+              existing.revision,
+            )
+        : this.db
+            .prepare(
+              "INSERT INTO dossier_records(owner_id,kind,id,revision,value,updated_at) VALUES(?,?,?,1,?,?) ON CONFLICT DO NOTHING",
+            )
+            .bind(
+              this.context.ownerId,
+              kind,
+              entry.id,
+              serialized[index],
+              timestamp,
+            );
     });
+    for (let offset = 0; offset < statements.length; offset += 80) {
+      const batch = statements.slice(offset, offset + 80);
+      const results = await this.db.batch(batch);
+      if (
+        results.length !== batch.length ||
+        results.some((result) => result.meta.changes !== 1)
+      )
+        throw new DossierError("REVISION_CONFLICT", 409);
+    }
   }
   async list<T>(
     kind: EntityKind,
@@ -150,7 +431,18 @@ export class DossierRepository {
         value: string;
         updatedAt: number;
       }>();
-    return rows.results.map((r) => ({ ...r, value: JSON.parse(r.value) as T }));
+    const size = rows.results.reduce(
+      (total, row) => total + storedRecordBytes(kind, row.value),
+      0,
+    );
+    if (size > MAX_AGGREGATE_BYTES)
+      throw new DossierError("CORPUS_CAPACITY_LIMIT", 413);
+    return Promise.all(
+      rows.results.map(async (r) => ({
+        ...r,
+        value: (await this.hydrate(kind, JSON.parse(r.value))) as T,
+      })),
+    );
   }
   async all<T>(kind: EntityKind): Promise<Stored<T>[]> {
     const rows: Stored<T>[] = [];
@@ -189,12 +481,18 @@ export class DossierRepository {
           updatedAt: number;
         }>();
       for (const row of rows.results) {
-        size += row.value.length;
-        if (size > 20000000)
+        size += storedRecordBytes(kind, row.value);
+        if (size > MAX_AGGREGATE_BYTES)
           throw new DossierError("CORPUS_CAPACITY_LIMIT", 413);
         output.push({ ...row, value: JSON.parse(row.value) as T });
       }
-      if (rows.results.length < 200) return output;
+      if (rows.results.length < 200)
+        return Promise.all(
+          output.map(async (row) => ({
+            ...row,
+            value: (await this.hydrate(kind, row.value)) as T,
+          })),
+        );
       if (output.length >= 50000) throw new DossierError("RESOURCE_LIMIT", 413);
     }
   }
@@ -204,9 +502,7 @@ export class DossierRepository {
     value: T,
     expectedRevision: number,
   ): Promise<Stored<T>> {
-    const serialized = JSON.stringify(value);
-    if (serialized.length > 500000)
-      throw new DossierError("RECORD_TOO_LARGE", 413);
+    const serialized = await this.serializeRecord(kind, value);
     const result =
       expectedRevision === 0
         ? await this.db
@@ -241,6 +537,13 @@ export class DossierRepository {
     value: unknown,
   ) {
     const owner = this.context.ownerId;
+    const conversationValue = JSON.stringify(value);
+    if (
+      typeof conversationValue !== "string" ||
+      conversationValue.length > MAX_RECORD_CHARS
+    )
+      throw new DossierError("RECORD_TOO_LARGE", 413);
+    const messageValue = await this.serializeRecord("message", turn);
     const result = await this.db.batch([
       this.db
         .prepare(
@@ -249,7 +552,7 @@ export class DossierRepository {
         .bind(
           owner,
           turnId,
-          JSON.stringify(turn),
+          messageValue,
           this.now(),
           owner,
           id,
@@ -260,14 +563,7 @@ export class DossierRepository {
         .prepare(
           "UPDATE dossier_records SET value=?,revision=revision+1,updated_at=? WHERE owner_id=? AND kind='conversation' AND id=? AND revision=? AND json_extract(value,'$.pending.key')=?",
         )
-        .bind(
-          JSON.stringify(value),
-          this.now(),
-          owner,
-          id,
-          expectedRevision,
-          key,
-        ),
+        .bind(conversationValue, this.now(), owner, id, expectedRevision, key),
     ]);
     if (result.some((r) => r.meta.changes !== 1))
       throw new DossierError("CONVERSATION_LEASE_LOST", 409);

@@ -312,6 +312,471 @@ describe("persisted owner scoped dossiers and jobs", () => {
     expect(loadedDocuments.map((record) => record.value.id)).toEqual(documents);
     expect(queryCount).toBe(4);
   });
+
+  it("spills large report records to owner-scoped content-addressed R2 and hydrates every read path", async () => {
+    const report = {
+      dossierId: "CO1.REQ.LARGE",
+      hash: "large-report-hash",
+      summary: "complete report",
+      payload: "á".repeat(600_000),
+    };
+    const stored = await a.save("report", "large-report", report, 0);
+
+    expect(stored.value).toEqual(report);
+    expect(
+      (await a.read<typeof report>("report", "large-report")).value,
+    ).toEqual(report);
+    expect(
+      (await a.readMany<typeof report>("report", ["large-report"]))[0].value,
+    ).toEqual(report);
+    expect(
+      (await a.list<typeof report>("report")).find(
+        (r) => r.id === "large-report",
+      )?.value,
+    ).toEqual(report);
+    expect(
+      (await a.allMatching<typeof report>("report", "hash", [report.hash])).map(
+        (r) => r.value,
+      ),
+    ).toEqual([report]);
+    expect(
+      (
+        await a.allMatching<typeof report>("report", "dossierId", [
+          report.dossierId,
+        ])
+      ).map((r) => r.value),
+    ).toEqual([report]);
+    await expect(b.read("report", "large-report")).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+
+    const raw = (await env.DOSSIER_DB.prepare(
+      "SELECT value FROM dossier_records WHERE owner_id=? AND kind='report' AND id=?",
+    )
+      .bind("a", "large-report")
+      .first()) as { value: string } | null;
+    const pointer = JSON.parse(raw!.value);
+    expect(pointer.payload).toBeUndefined();
+    expect(pointer.__saviaAggregateBlob.key).toMatch(
+      /^report-v1\.[a-f0-9]{64}$/,
+    );
+    expect(pointer.__saviaAggregateBlob.length).toBe(
+      new TextEncoder().encode(JSON.stringify(report)).length,
+    );
+
+    await env.DOSSIER_DB.prepare(
+      "INSERT INTO dossier_records(owner_id,kind,id,revision,value,updated_at) VALUES(?,?,?,1,?,?)",
+    )
+      .bind(
+        "b",
+        "report",
+        "forged-report-pointer",
+        JSON.stringify(pointer),
+        now,
+      )
+      .run();
+    await expect(
+      b.read("report", "forged-report-pointer"),
+    ).rejects.toMatchObject({ code: "AGGREGATE_BLOB_MISSING" });
+  });
+
+  it("fails closed when a spilled report blob is missing or has been tampered with", async () => {
+    await a.save(
+      "report",
+      "missing-report",
+      { payload: "m".repeat(600_000) },
+      0,
+    );
+    await a.save(
+      "report",
+      "tampered-report",
+      { payload: "t".repeat(600_000) },
+      0,
+    );
+    const rows = (await env.DOSSIER_DB.prepare(
+      "SELECT id,value FROM dossier_records WHERE owner_id=? AND kind='report' AND id IN (?,?)",
+    )
+      .bind("a", "missing-report", "tampered-report")
+      .all()) as { results: { id: string; value: string }[] };
+    const pointers = new Map<string, { key: string; length: number }>(
+      rows.results.map((row) => {
+        const pointer = JSON.parse(row.value).__saviaAggregateBlob;
+        return [row.id, { key: pointer.key, length: pointer.length }];
+      }),
+    );
+    await a.deleteFile(pointers.get("missing-report")!.key);
+    await a.putFile(
+      pointers.get("tampered-report")!.key,
+      new TextEncoder().encode(
+        "z".repeat(pointers.get("tampered-report")!.length),
+      ),
+      "application/json",
+    );
+
+    await expect(a.read("report", "missing-report")).rejects.toMatchObject({
+      code: "AGGREGATE_BLOB_MISSING",
+    });
+    await expect(a.read("report", "tampered-report")).rejects.toMatchObject({
+      code: "AGGREGATE_BLOB_CORRUPT",
+    });
+  });
+
+  it("keeps large report writes revision-checked and preserves the nonreport record limit", async () => {
+    const original = { payload: "original".repeat(80_000) };
+    await a.save("report", "revisioned-report", original, 0);
+    await expect(
+      a.save(
+        "report",
+        "revisioned-report",
+        { payload: "stale".repeat(80_000) },
+        0,
+      ),
+    ).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    expect(
+      (await a.read<typeof original>("report", "revisioned-report")).value,
+    ).toEqual(original);
+    await expect(
+      a.save(
+        "company",
+        "too-large-company",
+        { payload: "x".repeat(500_001) },
+        0,
+      ),
+    ).rejects.toMatchObject({ code: "RECORD_TOO_LARGE" });
+    await expect(
+      a.save(
+        "report",
+        "oversized-report",
+        { payload: "x".repeat(20_000_000) },
+        0,
+      ),
+    ).rejects.toMatchObject({ code: "RECORD_TOO_LARGE" });
+  });
+
+  it("spills large assessments with the same owner-scoped integrity checks", async () => {
+    const assessment = {
+      assessmentId: "assessment-large",
+      dossierId: "CO1.REQ.ASSESSMENT",
+      findings: "assessment finding ".repeat(40_000),
+    };
+    await a.save("assessment", assessment.assessmentId, assessment, 0);
+    expect(
+      (await a.read<typeof assessment>("assessment", assessment.assessmentId))
+        .value,
+    ).toEqual(assessment);
+    expect(
+      (
+        await a.allMatching<typeof assessment>("assessment", "assessmentId", [
+          assessment.assessmentId,
+        ])
+      ).map((r) => r.value),
+    ).toEqual([assessment]);
+    expect(
+      (
+        await a.allMatching<typeof assessment>("assessment", "dossierId", [
+          assessment.dossierId,
+        ])
+      ).map((r) => r.value),
+    ).toEqual([assessment]);
+    await expect(
+      b.read("assessment", assessment.assessmentId),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("loads only owner-scoped analysis cache records and excludes finalized reports", async () => {
+    await a.save("report", "part.cache-a", { summary: "part a" }, 0);
+    await a.save("report", "joint.cache-a", { summary: "joint a" }, 0);
+    await a.save("report", "CO1.REQ.500:1", { summary: "final report" }, 0);
+    await b.save("report", "part.cache-a", { summary: "other owner" }, 0);
+
+    const cache = await a.readAnalysisCache();
+    expect(cache.map((record) => record.id)).toEqual([
+      "joint.cache-a",
+      "part.cache-a",
+    ]);
+    expect(cache.map((record) => record.value)).toEqual([
+      { summary: "joint a" },
+      { summary: "part a" },
+    ]);
+  });
+
+  it("caps analysis-cache reads before loading more than 5,000 cache records", async () => {
+    const db = new Proxy(env.DOSSIER_DB, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (property === "prepare")
+          return (...args: Parameters<D1Database["prepare"]>) => {
+            const statement = value.apply(target, args);
+            if (String(args[0]).includes("substr(id,1,5)='part.'"))
+              return {
+                bind: () => ({
+                  all: async () => ({
+                    results: Array.from({ length: 5001 }, (_, index) => ({
+                      id: `part.cache-${index}`,
+                    })),
+                  }),
+                }),
+              };
+            return statement;
+          };
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const capped = new DossierRepository({ ...env, DOSSIER_DB: db }, a.context);
+    await expect(capped.readAnalysisCache()).rejects.toMatchObject({
+      code: "REPORT_CACHE_CAPACITY_LIMIT",
+    });
+  });
+
+  it("upserts requirement rows in bounded D1 batches with per-row revisions", async () => {
+    const existing = Array.from({ length: 2 }, (_, index) => ({
+      id: `batch-requirement-${index}`,
+      value: { wording: `old ${index}` },
+    }));
+    for (const entry of existing)
+      await a.save("requirement", entry.id, entry.value, 0);
+    const entries = Array.from({ length: 213 }, (_, index) => ({
+      id: `batch-requirement-${index}`,
+      value: { wording: `new ${index}` },
+    }));
+
+    let batchCalls = 0;
+    const db = new Proxy(env.DOSSIER_DB, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (property === "batch")
+          return (...args: Parameters<D1Database["batch"]>) => {
+            batchCalls++;
+            return value.apply(target, args);
+          };
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const batched = new DossierRepository(
+      { ...env, DOSSIER_DB: db },
+      a.context,
+    );
+    await batched.upsertMany("requirement", entries);
+
+    expect(batchCalls).toBe(3);
+    const saved = await a.readMany<{ wording: string }>(
+      "requirement",
+      entries.map((entry) => entry.id),
+    );
+    expect(saved.map((record) => record.value.wording)).toEqual(
+      entries.map((entry) => entry.value.wording),
+    );
+    expect(saved.slice(0, 2).map((record) => record.revision)).toEqual([2, 2]);
+    expect(saved.slice(2).every((record) => record.revision === 1)).toBe(true);
+    expect(
+      (
+        await b.readMany(
+          "requirement",
+          entries.map((entry) => entry.id),
+          { allowMissing: true },
+        )
+      ).length,
+    ).toBe(0);
+  });
+
+  it("detects an upsert revision race without overwriting the concurrent value", async () => {
+    await a.save("requirement", "batch-race", { wording: "original" }, 0);
+    const db = new Proxy(env.DOSSIER_DB, {
+      get(target, property) {
+        const value = Reflect.get(target, property, target);
+        if (property === "batch")
+          return async (...args: Parameters<D1Database["batch"]>) => {
+            await target
+              .prepare(
+                "UPDATE dossier_records SET value=?,revision=revision+1 WHERE owner_id=? AND kind=? AND id=?",
+              )
+              .bind(
+                JSON.stringify({ wording: "concurrent" }),
+                "a",
+                "requirement",
+                "batch-race",
+              )
+              .run();
+            return value.apply(target, args);
+          };
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const racing = new DossierRepository({ ...env, DOSSIER_DB: db }, a.context);
+
+    await expect(
+      racing.upsertMany("requirement", [
+        { id: "batch-race", value: { wording: "stale write" } },
+      ]),
+    ).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    expect(
+      (await a.read<{ wording: string }>("requirement", "batch-race")).value,
+    ).toEqual({ wording: "concurrent" });
+  });
+
+  it("bounds bulk requirement writes by count, individual record size and total bytes", async () => {
+    await expect(
+      a.upsertMany(
+        "requirement",
+        Array.from({ length: 5001 }, (_, index) => ({
+          id: `too-many-${index}`,
+          value: { wording: "x" },
+        })),
+      ),
+    ).rejects.toMatchObject({ code: "INVALID_BATCH" });
+    await expect(
+      a.upsertMany("requirement", [
+        { id: "too-large", value: { wording: "x".repeat(500_001) } },
+      ]),
+    ).rejects.toMatchObject({ code: "RECORD_TOO_LARGE" });
+    await expect(
+      a.upsertMany(
+        "requirement",
+        Array.from({ length: 42 }, (_, index) => ({
+          id: `too-many-bytes-${index}`,
+          value: { wording: "x".repeat(480_000) },
+        })),
+      ),
+    ).rejects.toMatchObject({ code: "CORPUS_CAPACITY_LIMIT" });
+  });
+
+  it("atomically commits and hydrates a multi-megabyte conversation message", async () => {
+    const conversation = {
+      pending: { key: "large-turn-key" },
+      turnIds: [],
+    };
+    await a.save("conversation", "large-conversation", conversation, 0);
+    const turn = {
+      conversationId: "large-conversation",
+      dossierId: "CO1.REQ.LARGE-MESSAGE",
+      text: "Complete evidence-grounded answer. ".repeat(70_000),
+    };
+    const updated = await a.commitConversationTurn(
+      "large-conversation",
+      1,
+      "large-turn-key",
+      "large-turn-message",
+      turn,
+      { turnIds: ["large-turn-message"] },
+    );
+
+    expect(updated.value).toEqual({ turnIds: ["large-turn-message"] });
+    expect(
+      (await a.read<typeof turn>("message", "large-turn-message")).value,
+    ).toEqual(turn);
+    expect(
+      (await a.readMany<typeof turn>("message", ["large-turn-message"]))[0]
+        .value,
+    ).toEqual(turn);
+    expect(
+      (await a.list<typeof turn>("message")).find(
+        (r) => r.id === "large-turn-message",
+      )?.value,
+    ).toEqual(turn);
+    expect(
+      (
+        await a.allMatching<typeof turn>("message", "dossierId", [
+          turn.dossierId,
+        ])
+      ).map((r) => r.value),
+    ).toEqual([turn]);
+    const raw = (await env.DOSSIER_DB.prepare(
+      "SELECT value FROM dossier_records WHERE owner_id=? AND kind='message' AND id=?",
+    )
+      .bind("a", "large-turn-message")
+      .first()) as { value: string } | null;
+    const pointer = JSON.parse(raw!.value);
+    expect(pointer.__saviaAggregateBlob.key).toMatch(
+      /^message-v1\.[a-f0-9]{64}$/,
+    );
+    expect(pointer.conversationId).toBe("large-conversation");
+    expect(pointer.text).toBeUndefined();
+    await env.DOSSIER_DB.prepare(
+      "INSERT INTO dossier_records(owner_id,kind,id,revision,value,updated_at) VALUES(?,?,?,1,?,?)",
+    )
+      .bind(
+        "b",
+        "message",
+        "forged-message-pointer",
+        JSON.stringify(pointer),
+        now,
+      )
+      .run();
+    await expect(
+      b.read("message", "forged-message-pointer"),
+    ).rejects.toMatchObject({ code: "AGGREGATE_BLOB_MISSING" });
+  });
+
+  it("keeps small conversation turns inline and commits them atomically", async () => {
+    await a.save(
+      "conversation",
+      "small-conversation",
+      { pending: { key: "small-turn-key" }, turnIds: [] },
+      0,
+    );
+    const turn = { conversationId: "small-conversation", answer: "ready" };
+    await a.commitConversationTurn(
+      "small-conversation",
+      1,
+      "small-turn-key",
+      "small-turn-message",
+      turn,
+      { turnIds: ["small-turn-message"] },
+    );
+    expect((await a.read("message", "small-turn-message")).value).toEqual(turn);
+    const raw = (await env.DOSSIER_DB.prepare(
+      "SELECT value FROM dossier_records WHERE owner_id=? AND kind='message' AND id=?",
+    )
+      .bind("a", "small-turn-message")
+      .first()) as { value: string } | null;
+    expect(JSON.parse(raw!.value)).toEqual(turn);
+  });
+
+  it("does not publish a dangling large message or oversized conversation on a stale commit", async () => {
+    const conversation = {
+      pending: { key: "current-turn-key" },
+      turnIds: [],
+    };
+    await a.save("conversation", "stale-conversation", conversation, 0);
+    const turn = {
+      conversationId: "stale-conversation",
+      text: "stale result ".repeat(180_000),
+    };
+    await expect(
+      a.commitConversationTurn(
+        "stale-conversation",
+        1,
+        "outdated-turn-key",
+        "dangling-turn-message",
+        turn,
+        { turnIds: ["dangling-turn-message"] },
+      ),
+    ).rejects.toMatchObject({ code: "CONVERSATION_LEASE_LOST" });
+    await expect(
+      a.read("message", "dangling-turn-message"),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect((await a.read("conversation", "stale-conversation")).value).toEqual(
+      conversation,
+    );
+
+    await expect(
+      a.commitConversationTurn(
+        "stale-conversation",
+        1,
+        "current-turn-key",
+        "oversized-conversation-turn",
+        { text: "small turn" },
+        { text: "x".repeat(500_001) },
+      ),
+    ).rejects.toMatchObject({ code: "RECORD_TOO_LARGE" });
+    await expect(
+      a.read("message", "oversized-conversation-turn"),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect((await a.read("conversation", "stale-conversation")).value).toEqual(
+      conversation,
+    );
+  });
+
   it("supports outbox recovery, exclusive claims, renewal, retry and cancellation", async () => {
     const j = await a.enqueueJob({
       kind: "inventory",

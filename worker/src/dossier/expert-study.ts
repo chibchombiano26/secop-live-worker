@@ -194,9 +194,37 @@ export async function executeExpertStudy(
     lines.push(
       `Evaluación de la empresa: ${assessment.readiness}. El resultado automático requiere revisión humana.`,
     );
-    for (const finding of assessment.findings.filter(
+    const pendingFindings = assessment.findings.filter(
       (f) => !["meets", "not_applicable"].includes(f.status),
-    )) {
+    );
+    const groupUnsupported =
+      pendingFindings.length > 1000 &&
+      pendingFindings.every((finding) => finding.companyCitations.length === 0);
+    if (groupUnsupported) {
+      const groups = new Map<string, { count: number; detail: string }>();
+      for (const finding of pendingFindings) {
+        const key = JSON.stringify([
+          finding.status,
+          finding.reason,
+          finding.missing,
+        ]);
+        const group = groups.get(key);
+        if (group) group.count++;
+        else
+          groups.set(key, {
+            count: 1,
+            detail: finding.missing.join("; ") || finding.reason,
+          });
+      }
+      for (const group of groups.values())
+        lines.push(
+          `- ${group.count} requisitos pendientes de acreditar: ${group.detail}`,
+        );
+      lines.push(
+        "Los hallazgos individuales permanecen guardados. La lista completa conserva cada requisito y sus citas; las declaraciones del perfil empresarial no son soportes de cumplimiento.",
+      );
+    }
+    for (const finding of groupUnsupported ? [] : pendingFindings) {
       const req = checklist.items.find(
         (r) => r.requirementId === finding.requirementId,
       );

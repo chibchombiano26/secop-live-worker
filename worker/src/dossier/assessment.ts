@@ -133,10 +133,9 @@ export async function assessCompany(
   ]);
   const companyRevision = company.company.revision,
     corpusRevision = report.value.corpusRevision;
-  const allRequirements = await Promise.all(
-    report.value.requirementIds.map((id) =>
-      repo.read<Requirement>("requirement", id),
-    ),
+  const allRequirements = await repo.readMany<Requirement>(
+    "requirement",
+    report.value.requirementIds,
   );
   const knownLots = new Set(
     allRequirements.map((r) => r.value.lot).filter(Boolean),
@@ -146,17 +145,19 @@ export async function assessCompany(
   const findings: Array<
     Finding & { requirementId: string; mandatory: boolean }
   > = [];
-  for (const requirementId of report.value.requirementIds) {
-    const req = (await repo.read<Requirement>("requirement", requirementId))
-      .value;
+  for (const requirement of allRequirements) {
+    const requirementId = requirement.id;
+    const req = requirement.value;
     const cacheId = await sha256(
       `assessment:${dossierId}:${corpusRevision}:${companyId}:${companyRevision}:${requirementId}:${JSON.stringify(selectedLots)}:${model.id}`,
     );
     let cached: unknown;
-    try {
-      cached = (await repo.read("assessment", `part.${cacheId}`)).value;
-    } catch (e) {
-      if (!(e instanceof DossierError) || e.code !== "NOT_FOUND") throw e;
+    if (company.chunks.length) {
+      try {
+        cached = (await repo.read("assessment", `part.${cacheId}`)).value;
+      } catch (e) {
+        if (!(e instanceof DossierError) || e.code !== "NOT_FOUND") throw e;
+      }
     }
     let finding: Finding;
     if (!company.chunks.length) {
@@ -350,12 +351,17 @@ export async function readAssessment(repo: DossierRepository, id: string) {
       r.value.dossierId === stored.value.dossierId &&
       r.value.companyId === stored.value.companyId,
   );
+  const requirements = new Map(
+    (
+      await repo.readMany<Requirement>(
+        "requirement",
+        stored.value.findings.map((f) => f.requirementId),
+      )
+    ).map((r) => [r.id, r]),
+  );
   const effectiveFindings = await Promise.all(
     stored.value.findings.map(async (f) => {
-      const requirement = await repo.read<Requirement>(
-        "requirement",
-        f.requirementId,
-      );
+      const requirement = requirements.get(f.requirementId)!;
       const fingerprint = await sha256(JSON.stringify(requirement.value));
       const review = [...reviews, ...priorReviews]
         .filter(

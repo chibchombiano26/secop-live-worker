@@ -5,7 +5,7 @@ import {
 } from "../src/dossier/processing";
 import { DossierError } from "../src/dossier/contracts";
 import { executePrivateOperation } from "../src/dossier/api";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { readFileSync } from "node:fs";
 import { extractCompanyFacts } from "../src/dossier/company-facts";
@@ -453,6 +453,7 @@ describe("persisted dossier, assessment and chat workflow", () => {
       { name: "Company", facts: [] },
       0,
     );
+    const evidenceReads = vi.spyOn(repo, "read");
     const empty = await assessCompany(repo, d.id, company.id, [], {
       ...model,
       async generate(input) {
@@ -466,6 +467,17 @@ describe("persisted dossier, assessment and chat workflow", () => {
         return model.generate(input);
       },
     });
+    const emptyReloaded = await readAssessment(repo, empty.id);
+    expect(emptyReloaded.value.findings).toHaveLength(
+      report.requirementIds.length,
+    );
+    const unnecessaryReads = evidenceReads.mock.calls.filter(
+      ([kind, id]) =>
+        kind === "requirement" ||
+        (kind === "assessment" && id.startsWith("part.")),
+    );
+    evidenceReads.mockRestore();
+    expect(unnecessaryReads).toHaveLength(0);
     expect(empty.readiness).toBe("missing_requirements");
     await repo.save(
       "document",
@@ -909,14 +921,39 @@ describe("persisted dossier, assessment and chat workflow", () => {
           return {
             summary:
               "Todos los requisitos deben revisarse antes de preparar la oferta.",
-            candidates: [],
+            candidates: [
+              {
+                left: 0,
+                right: 1,
+                kind: "conflict",
+                reason: "Check whether these source obligations differ.",
+              },
+            ],
           };
         }
+        if (input.purpose === "joint_conflict_verification")
+          return {
+            decision: "unconfirmed",
+            reason: "The cited obligations are compatible.",
+            citationIds: [],
+          };
         if (input.purpose === "cross_document_review") oldCalls++;
-        return model.generate(input);
+        const generated = await model.generate(input);
+        return input.purpose === "extract_requirements"
+          ? {
+              ...(generated as object),
+              summary: "Complete source summary. ".repeat(125),
+            }
+          : generated;
       },
     };
+    const individualReads = vi.spyOn(repo, "read");
     const report = await synthesizeDossier(repo, d.id, 1, provider);
+    const cacheReadCount = individualReads.mock.calls.filter(
+      ([kind, id]) => kind === "report" && /^(part|joint)\./.test(id),
+    ).length;
+    individualReads.mockRestore();
+    expect(cacheReadCount).toBeLessThanOrEqual(430);
     expect(oldCalls).toBe(0);
     expect(jointCalls).toBe(1);
     expect(Math.max(...inputSizes)).toBeLessThanOrEqual(48000);
@@ -924,6 +961,14 @@ describe("persisted dossier, assessment and chat workflow", () => {
     expect(report.coverage.indexed).toBe(2);
     expect(report.requirementIds).toHaveLength(213);
     expect(report.citations).toHaveLength(213);
+    expect(report.candidateReviews[0]).toMatchObject({
+      decision: "unconfirmed",
+      citations: [],
+    });
+    expect(JSON.stringify(report).length).toBeGreaterThan(500_000);
+    const persistedReport = await repo.read<any>("report", `${d.id}:1`);
+    expect(persistedReport.value).toEqual(report);
+    expect((await repo.readDossier(d.id)).value.needsSynthesis).toBe(false);
     const saved = await Promise.all(
       report.requirementIds.map((id) => repo.read<any>("requirement", id)),
     );
@@ -942,7 +987,13 @@ describe("persisted dossier, assessment and chat workflow", () => {
       ),
     ).toEqual(new Set(documentIds));
     const calls = inputSizes.length;
+    const resumedReads = vi.spyOn(repo, "read");
     await synthesizeDossier(repo, d.id, 1, provider);
+    const resumedCacheReads = resumedReads.mock.calls.filter(
+      ([kind, id]) => kind === "report" && /^(part|joint)\./.test(id),
+    );
+    resumedReads.mockRestore();
+    expect(resumedCacheReads).toHaveLength(0);
     expect(inputSizes).toHaveLength(calls);
     const sourceToReview = await repo.read<any>("document", documentIds[0]);
     await repo.save(
@@ -1087,18 +1138,21 @@ describe("persisted dossier, assessment and chat workflow", () => {
         record.revision,
       );
     }
-    await expect(
-      answerTenderQuestion(
-        repo,
-        {
-          dossierId: d.id,
-          expectedRevision: 0,
-          message: "List all requirements completely",
-          idempotencyKey: "complete-checklist-output-limit",
-        },
-        provider,
-      ),
-    ).rejects.toMatchObject({ code: "CHECKLIST_OUTPUT_LIMIT", status: 413 });
+    const largeAnswer = await answerTenderQuestion(
+      repo,
+      {
+        dossierId: d.id,
+        expectedRevision: 0,
+        message: "List all requirements completely",
+        idempotencyKey: "complete-checklist-large-output",
+      },
+      provider,
+    );
+    expect(largeAnswer.answer.length).toBeGreaterThan(500_000);
+    expect(largeAnswer.checklist?.items).toHaveLength(213);
+    const savedLargeTurn = await repo.read<any>("message", largeAnswer.turnId);
+    expect(savedLargeTurn.value.answer === largeAnswer.answer).toBe(true);
+    expect(savedLargeTurn.value.checklist.items).toHaveLength(213);
     // This integration fixture persists 213 records and exercises several replay paths.
     // Its timeout is an I/O allowance, not a performance assertion.
   }, 60000);

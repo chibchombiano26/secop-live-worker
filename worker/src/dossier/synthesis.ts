@@ -193,7 +193,11 @@ export async function extractRequirements(
       return splitFragment(chunk);
     }
   }
-  async function generateFragment(chunk: EvidenceChunk, key: string, cached: unknown) {
+  async function generateFragment(
+    chunk: EvidenceChunk,
+    key: string,
+    cached: unknown,
+  ) {
     let result: z.infer<typeof partSchema> | undefined;
     let previous: unknown;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -338,6 +342,11 @@ export async function synthesizeDossier(
       .map((d) => d.id),
     catalogOnly: true,
   };
+  // Preload only validated analysis cache records in bounded owner-scoped reads.
+  // Exact content hashes still select which entries belong to this source input.
+  const analysisCache = new Map(
+    (await repo.readAnalysisCache()).map((record) => [record.id, record.value]),
+  );
   let fragmentsVisited = 0;
   let extractionCacheHits = 0;
   await checkpoint?.({
@@ -347,12 +356,9 @@ export async function synthesizeDossier(
   const parts = await extractRequirements(chunks, model, {
     get: async (key) => {
       try {
-        const cached = (await repo.read("report", `part.${key}`)).value;
-        extractionCacheHits++;
+        const cached = analysisCache.get(`part.${key}`) ?? null;
+        if (cached !== null) extractionCacheHits++;
         return cached;
-      } catch (e) {
-        if (e instanceof DossierError && e.code === "NOT_FOUND") return null;
-        throw e;
       } finally {
         fragmentsVisited++;
         if (fragmentsVisited % 20 === 0)
@@ -365,28 +371,38 @@ export async function synthesizeDossier(
     },
     put: async (key, value) => {
       await repo.upsert("report", `part.${key}`, value);
+      analysisCache.set(`part.${key}`, value);
     },
   });
+  let previousReviewPhase: unknown;
   const joint = await reviewJointRequirements(
     parts.requirements,
     model,
     coverage,
     {
-      get: async (key) => {
-        try {
-          return (await repo.read("report", `joint.${key}`)).value;
-        } catch (error) {
-          if (error instanceof DossierError && error.code === "NOT_FOUND")
-            return null;
-          throw error;
-        }
-      },
+      get: async (key) => analysisCache.get(`joint.${key}`) ?? null,
       put: async (key, value) => {
         await repo.upsert("report", `joint.${key}`, value);
+        analysisCache.set(`joint.${key}`, value);
       },
     },
     checkpoint
-      ? (progress) => checkpoint({ ...progress, stage: progress.phase })
+      ? async (progress) => {
+          const completed = Number(
+            progress.reviewGroupsCompleted ?? progress.candidatesCompleted ?? 0,
+          );
+          const total = Number(
+            progress.reviewGroupsTotal ?? progress.candidatesTotal ?? 0,
+          );
+          if (
+            progress.phase !== previousReviewPhase ||
+            completed % 20 === 0 ||
+            completed === total
+          ) {
+            previousReviewPhase = progress.phase;
+            await checkpoint({ ...progress, stage: progress.phase });
+          }
+        }
       : undefined,
   );
   const overviews = joint.summaries;
@@ -396,17 +412,22 @@ export async function synthesizeDossier(
     citations: validateCitations(change.citations, chunks),
   }));
   const requirementIds: string[] = [];
+  const requirementRecords = [];
   for (let i = 0; i < parts.requirements.length; i++) {
     const id = await sha256(
       `${dossierId}:${revision}:${i}:${JSON.stringify(parts.requirements[i])}`,
     );
     requirementIds.push(id);
-    await repo.upsert("requirement", id, {
-      ...parts.requirements[i],
-      dossierId,
-      corpusRevision: revision,
+    requirementRecords.push({
+      id,
+      value: {
+        ...parts.requirements[i],
+        dossierId,
+        corpusRevision: revision,
+      },
     });
   }
+  await repo.upsertMany("requirement", requirementRecords);
   const report = {
     dossierId,
     corpusRevision: revision,
@@ -427,7 +448,10 @@ export async function synthesizeDossier(
       ...review,
       leftRequirementId: requirementIds[review.left],
       rightRequirementId: requirementIds[review.right],
-      citations: validateCitations(review.citations, chunks),
+      citations:
+        review.decision === "unconfirmed" && review.citations.length === 0
+          ? []
+          : validateCitations(review.citations, chunks),
     })),
     citations: parts.requirements.flatMap((r) => r.citations),
     requirementIds,

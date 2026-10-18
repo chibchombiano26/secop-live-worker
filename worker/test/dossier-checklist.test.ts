@@ -80,11 +80,38 @@ describe("exhaustive checklist rendering", () => {
     expect(answer).not.toContain("experience_years");
     expect(answer).not.toContain("gte");
     expect(answer).not.toContain("2 years");
-    checklist.items[0] = {...checklist.items[0], wording: "Presentación de ofertas", deadline: "30 de abril de 2026", deadlineStatus: "past"};
-    const compact = renderExhaustiveChecklist(checklist, {includeSourceExcerpts: false});
+    checklist.items[0] = {
+      ...checklist.items[0],
+      wording: "Presentación de ofertas",
+      deadline: "30 de abril de 2026",
+      deadlineStatus: "past",
+    };
+    const compact = renderExhaustiveChecklist(checklist, {
+      includeSourceExcerpts: false,
+    });
     expect(compact).toMatch(/^## Plazo de presentación transcurrido/);
     expect(compact).toContain("[S001] Pliego.pdf (p. 10)");
-    expect(compact).toContain("No se debe asumir que este proceso recibe ofertas");
+    expect(compact).toContain(
+      "No se debe asumir que este proceso recibe ofertas",
+    );
+    for (const wording of [
+      "Presentación de observaciones al pliego hasta el 14 de octubre",
+      "Recepción de observaciones sobre las propuestas recibidas",
+      "Entrega de respuestas a las observaciones a las ofertas",
+    ]) {
+      checklist.items[0].wording = wording;
+      const observations = renderExhaustiveChecklist(checklist);
+      expect(observations).not.toContain(
+        "## Plazo de presentación transcurrido",
+      );
+      expect(observations).toContain(wording);
+      expect(observations).toContain("30 de abril de 2026");
+    }
+    checklist.items[0].wording =
+      "Fecha límite para la recepción de las propuestas";
+    expect(renderExhaustiveChecklist(checklist)).toMatch(
+      /^## Plazo de presentación transcurrido/,
+    );
   });
 
   it("parses Spanish deadlines through the end of the stated Bogota day", () => {
@@ -116,7 +143,9 @@ describe("exhaustive checklist repository loading", () => {
   let repo: DossierRepository;
   const context = {
     ownerId: "checklist-load-owner",
-    scopes: ["dossier:read"] as ("dossier:read" | "dossier:write" | "company:write" | "conversation:write")[],
+    scopes: ["dossier:read"] as (
+      "dossier:read" | "dossier:write" | "company:write" | "conversation:write"
+    )[],
   };
   const dossierId = "CO1.REQ.445566";
   const reportId = `${dossierId}:7`;
@@ -167,7 +196,7 @@ describe("exhaustive checklist repository loading", () => {
       addRecord("requirement", id, {
         dossierId,
         corpusRevision: 7,
-        wording: `Condition in ${id}`,
+        wording: `Condition in ${id}: ${"supporting evidence ".repeat(80)}`,
         category: "experience",
         mandatory: true,
         lot: null,
@@ -223,14 +252,18 @@ describe("exhaustive checklist repository loading", () => {
       null,
     );
 
+    expect(
+      JSON.stringify(checklist).length +
+        renderExhaustiveChecklist(checklist).length * 2,
+    ).toBeGreaterThan(500_000);
     expect(checklist.items).toHaveLength(213);
     expect(checklist.items[0].requirementId).toBe(requirementIds[0]);
     expect(checklist.items.at(-1)?.requirementId).toBe(requirementIds.at(-1));
     expect(checklist.coverage.listedDocuments).toBe(12);
     expect(checklist.sources[0].reference).toBe("S001");
-    expect(counted.queries().filter((sql) => sql.includes("id IN (")).length).toBe(
-      4,
-    );
+    expect(
+      counted.queries().filter((sql) => sql.includes("id IN (")).length,
+    ).toBe(4);
     expect(counted.queries()).toHaveLength(5);
   });
 

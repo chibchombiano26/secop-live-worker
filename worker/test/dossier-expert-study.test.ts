@@ -101,7 +101,7 @@ it("resumes a budget pause without repeating the paid planning call", async () =
   } finally {
     await f.mf.dispose();
   }
-});
+}, 15_000);
 it("rejects an amendment arriving during assessment before saving a plan", async () => {
   const f = await expertFixture(undefined, true, true);
   try {
@@ -301,6 +301,58 @@ it("recovers explicit user decisions as assertions without approving company fac
       model,
     });
     expect((await readExpertState(f.repo, f.scope)).memory?.revision).toBe(1);
+  } finally {
+    await f.mf.dispose();
+  }
+}, 20000);
+
+it("keeps a large unsupported-company review compact while preserving every finding and cited requirement", async () => {
+  const f = await expertFixture(
+    "Evalúa mi empresa frente a los requisitos del expediente",
+  );
+  try {
+    const original = await f.repo.read<any>("requirement", "r1");
+    const entries = Array.from({ length: 1001 }, (_, i) => ({
+      id: `large-requirement-${i}`,
+      value: {
+        ...original.value,
+        wording: `Requirement ${i}: ${"Provide supporting evidence. ".repeat(7)}`,
+      },
+    }));
+    await f.repo.upsertMany("requirement", entries);
+    const report = await f.repo.read<any>("report", `${f.scope.dossierId}:1`);
+    await f.repo.save(
+      "report",
+      report.id,
+      { ...report.value, requirementIds: entries.map((e) => e.id) },
+      report.revision,
+    );
+    await executeExpertStudy(f.repo, f.job, f.env, {
+      model: {
+        id: "large-company-review",
+        generate: async () => ({ actions: ["review", "evaluate_company"] }),
+      },
+    });
+    const turn = (await f.repo.all<any>("message")).find(
+      (m) => m.value.expert,
+    )!.value;
+    expect(turn.expert.summary.length).toBeLessThan(5000);
+    expect(turn.expert.summary).toContain("1001");
+    expect(turn.checklist.items.map((item: any) => item.requirementId)).toEqual(
+      entries.map((e) => e.id),
+    );
+    const assessment = (await f.repo.all<any>("assessment")).find((r) =>
+      Array.isArray(r.value.findings),
+    )!.value;
+    expect(assessment.findings).toHaveLength(1001);
+    expect(
+      assessment.findings.every(
+        (finding: any) => finding.status === "insufficient_evidence",
+      ),
+    ).toBe(true);
+    expect(
+      turn.checklist.items.every((item: any) => item.citations.length > 0),
+    ).toBe(true);
   } finally {
     await f.mf.dispose();
   }

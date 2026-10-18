@@ -4,7 +4,8 @@ import type { EvidenceChunk } from "./extraction";
 import type { Requirement } from "./synthesis";
 import { requirementSchema, validateCitations } from "./synthesis";
 
-const MAX_CHECKLIST_CHARS = 500_000;
+// Complete multi-document checklists are persisted as bounded private R2 turns.
+const MAX_CHECKLIST_CHARS = 20_000_000;
 
 export type ChecklistCitation = {
   sourceRef: string;
@@ -247,7 +248,8 @@ export async function buildExhaustiveChecklist(
           typeof doc.value.name === "string"
             ? doc.value.name
             : "Descripción oficial del proceso",
-        state: typeof doc.value.state === "string" ? doc.value.state : "unknown",
+        state:
+          typeof doc.value.state === "string" ? doc.value.state : "unknown",
         warnings: Array.isArray(doc.value.warnings)
           ? doc.value.warnings.filter((x): x is string => typeof x === "string")
           : [],
@@ -452,7 +454,9 @@ export function renderExhaustiveChecklist(
   const pastSubmission = checklist.items.filter(
     (item) =>
       item.deadlineStatus === "past" &&
-      /presentaci[oó]n|propuestas|ofertas/i.test(item.wording),
+      /(?:presentacion|recepcion|radicacion|entrega|cierre|presentar|recibir|radicar|entregar)(?:\s+(?:de|del|la|el|las|los|para|sus|su|una|unas)){0,4}\s+(?:ofertas?|propuestas?)\b/iu.test(
+        item.wording.normalize("NFD").replace(/[\u0300-\u036f]/g, ""),
+      ),
   );
   const lines = [
     ...(pastSubmission.length
