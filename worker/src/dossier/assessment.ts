@@ -51,7 +51,10 @@ export function normalizeFinding(
 ): Finding {
   const finding = findingSchema.parse(value);
   if (finding.companyCitations.length)
-    finding.companyCitations = validateCitations(finding.companyCitations, chunks);
+    finding.companyCitations = validateCitations(
+      finding.companyCitations,
+      chunks,
+    );
   if (
     requirement.lot &&
     selectedLots.length &&
@@ -124,7 +127,10 @@ export async function assessCompany(
   if (report.value.corpusRevision !== dossier.value.corpusRevision)
     throw new DossierError("REPORT_STALE", 409);
   const company = await companyEvidence(repo, companyId);
-  const unverifiedEvidence = new Set([...company.expired, ...company.docs.filter(d => d.value.state !== "ready").map(d => d.id)]);
+  const unverifiedEvidence = new Set([
+    ...company.expired,
+    ...company.docs.filter((d) => d.value.state !== "ready").map((d) => d.id),
+  ]);
   const companyRevision = company.company.revision,
     corpusRevision = report.value.corpusRevision;
   const allRequirements = await Promise.all(
@@ -201,7 +207,9 @@ export async function assessCompany(
         );
         if (
           !fact ||
-          fact.citations.some((c) => unverifiedEvidence.has(c.documentVersionId))
+          fact.citations.some((c) =>
+            unverifiedEvidence.has(c.documentVersionId),
+          )
         )
           finding = {
             ...finding,
@@ -224,7 +232,13 @@ export async function assessCompany(
       await repo.upsert("assessment", `part.${cacheId}`, finding);
     }
     // Revalidate cached findings too: extraction/expiry may change without the old cache key.
-    finding = normalizeFinding(req, finding, company.chunks, unverifiedEvidence, selectedLots);
+    finding = normalizeFinding(
+      req,
+      finding,
+      company.chunks,
+      unverifiedEvidence,
+      selectedLots,
+    );
     findings.push({ ...finding, requirementId, mandatory: req.mandatory });
   }
   const latestCompany = await repo.read("company", companyId),
@@ -265,16 +279,27 @@ export async function assessCompany(
     (f) => !["meets", "not_applicable"].includes(f.status),
   )) {
     const taskId = `${id}.${f.requirementId}`;
-    try { await repo.save("task", taskId, {
-      assessmentId: id,
-      dossierId,
-      requirementId: f.requirementId,
-      description: f.missing.join("\n") || f.reason,
-      owner: null,
-      dueDate: null,
-      state: "pending",
-    }, 0); } catch (error) {
-      if (!(error instanceof DossierError) || error.code !== "REVISION_CONFLICT") throw error;
+    try {
+      await repo.save(
+        "task",
+        taskId,
+        {
+          assessmentId: id,
+          dossierId,
+          requirementId: f.requirementId,
+          description: f.missing.join("\n") || f.reason,
+          owner: null,
+          dueDate: null,
+          state: "pending",
+        },
+        0,
+      );
+    } catch (error) {
+      if (
+        !(error instanceof DossierError) ||
+        error.code !== "REVISION_CONFLICT"
+      )
+        throw error;
     }
   }
   return { id, ...result };

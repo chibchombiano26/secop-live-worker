@@ -38,9 +38,22 @@ export async function readStudyJob(repo: DossierRepository, scope: StudyScope) {
     throw new DossierError("AGENT_CONTEXT_MISMATCH", 403);
   const request = (await repo.read<ChatInput>("message", job.targetId)).value;
   if (request.authority) {
-    const { authority, kind: _kind, ...publicRequest } = request as ChatInput & { kind?: string };
-    const savedAuthority = z.object({ scopes: privateContextSchema.shape.scopes, requestHash: z.string().length(64) }).strict().parse(authority);
-    if (savedAuthority.requestHash !== await sha256(JSON.stringify(publicRequest)))
+    const {
+      authority,
+      kind: _kind,
+      ...publicRequest
+    } = request as ChatInput & { kind?: string };
+    const savedAuthority = z
+      .object({
+        scopes: privateContextSchema.shape.scopes,
+        requestHash: z.string().length(64),
+      })
+      .strict()
+      .parse(authority);
+    if (
+      savedAuthority.requestHash !==
+      (await sha256(JSON.stringify(publicRequest)))
+    )
       throw new DossierError("AGENT_REQUEST_CHANGED", 403);
   }
   if (
