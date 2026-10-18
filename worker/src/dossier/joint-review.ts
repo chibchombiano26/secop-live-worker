@@ -5,7 +5,8 @@ import type { ModelProvider } from "./model";
 import type { Citation, Requirement } from "./synthesis";
 
 const REQUEST_LIMIT = 48_000;
-const REPORT_LIMIT = 200_000;
+// This aggregates independently bounded responses, rather than one inference.
+const REPORT_LIMIT = 20_000_000;
 const reviewSchema = z.object({
   summary: z.string().max(6_000),
   candidates: z
@@ -112,9 +113,10 @@ function logInvalidGroupCandidate(
     JSON.stringify({
       event: "joint_review_invalid_output",
       groupIndex,
-      category: candidate.left === candidate.right
-        ? "candidate_self"
-        : "candidate_scope",
+      category:
+        candidate.left === candidate.right
+          ? "candidate_self"
+          : "candidate_scope",
       left: candidate.left,
       right: candidate.right,
       allowedIndexMin: Math.min(...indices),
@@ -217,9 +219,7 @@ function reviewInput(
 function candidateScopes(group: Group, blocks: number[][]) {
   if (group.summaryAllowed)
     return { left: group.indices, right: group.indices };
-  const leftBlock = blocks.find((block) =>
-    block.includes(group.indices[0]),
-  );
+  const leftBlock = blocks.find((block) => block.includes(group.indices[0]));
   if (!leftBlock) throw invalidOutput();
   const left = group.indices.filter((index) => leftBlock.includes(index));
   const right = group.indices.filter((index) => !leftBlock.includes(index));
@@ -722,6 +722,6 @@ export async function reviewJointRequirements(
     },
   };
   if (JSON.stringify(result).length > REPORT_LIMIT)
-    throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
+    throw new DossierError("REPORT_CAPACITY_LIMIT", 413);
   return result;
 }

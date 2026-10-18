@@ -34,6 +34,23 @@ The report `analysis` field records requirement/document counts, visited extract
 fragments, cache hits, comparison groups, pair coverage and model request counts.
 These metrics distinguish work reused from new inference requests.
 
+## Large aggregate persistence
+
+A complete report can exceed the size of any individual model response. The
+aggregate comparison limit is 20 million characters; each inference keeps its
+existing bounded input and validated output schema. Exceeding the aggregate
+capacity fails explicitly with `REPORT_CAPACITY_LIMIT`, never by clipping
+requirements or classifying a complete collection as a truncated inference.
+
+Report and company-assessment records larger than 500,000 serialized characters
+are stored as immutable, content-addressed JSON objects in the existing private
+R2 bucket, with a versioned reference in the owner-scoped D1 record. The complete
+UTF-8 object is bounded to 20 MB. Repository reads hydrate and verify its size and
+SHA-256 before returning the existing record shape. Missing or corrupt objects
+fail closed. Small records remain inline, optimistic revisions still apply, and
+other record kinds retain the existing size limit. No existing resource or data
+migration is required.
+
 ## Complete checklist questions
 
 Explicit requests for all requirements use the complete saved requirement index,

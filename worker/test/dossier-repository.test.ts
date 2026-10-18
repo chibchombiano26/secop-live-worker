@@ -312,6 +312,177 @@ describe("persisted owner scoped dossiers and jobs", () => {
     expect(loadedDocuments.map((record) => record.value.id)).toEqual(documents);
     expect(queryCount).toBe(4);
   });
+
+  it("spills large report records to owner-scoped content-addressed R2 and hydrates every read path", async () => {
+    const report = {
+      dossierId: "CO1.REQ.LARGE",
+      hash: "large-report-hash",
+      summary: "complete report",
+      payload: "á".repeat(600_000),
+    };
+    const stored = await a.save("report", "large-report", report, 0);
+
+    expect(stored.value).toEqual(report);
+    expect(
+      (await a.read<typeof report>("report", "large-report")).value,
+    ).toEqual(report);
+    expect(
+      (await a.readMany<typeof report>("report", ["large-report"]))[0].value,
+    ).toEqual(report);
+    expect(
+      (await a.list<typeof report>("report")).find(
+        (r) => r.id === "large-report",
+      )?.value,
+    ).toEqual(report);
+    expect(
+      (await a.allMatching<typeof report>("report", "hash", [report.hash])).map(
+        (r) => r.value,
+      ),
+    ).toEqual([report]);
+    expect(
+      (
+        await a.allMatching<typeof report>("report", "dossierId", [
+          report.dossierId,
+        ])
+      ).map((r) => r.value),
+    ).toEqual([report]);
+    await expect(b.read("report", "large-report")).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+
+    const raw = (await env.DOSSIER_DB.prepare(
+      "SELECT value FROM dossier_records WHERE owner_id=? AND kind='report' AND id=?",
+    )
+      .bind("a", "large-report")
+      .first()) as { value: string } | null;
+    const pointer = JSON.parse(raw!.value);
+    expect(pointer.payload).toBeUndefined();
+    expect(pointer.__saviaAggregateBlob.key).toMatch(
+      /^report-v1\.[a-f0-9]{64}$/,
+    );
+    expect(pointer.__saviaAggregateBlob.length).toBe(
+      new TextEncoder().encode(JSON.stringify(report)).length,
+    );
+
+    await env.DOSSIER_DB.prepare(
+      "INSERT INTO dossier_records(owner_id,kind,id,revision,value,updated_at) VALUES(?,?,?,1,?,?)",
+    )
+      .bind(
+        "b",
+        "report",
+        "forged-report-pointer",
+        JSON.stringify(pointer),
+        now,
+      )
+      .run();
+    await expect(
+      b.read("report", "forged-report-pointer"),
+    ).rejects.toMatchObject({ code: "AGGREGATE_BLOB_MISSING" });
+  });
+
+  it("fails closed when a spilled report blob is missing or has been tampered with", async () => {
+    await a.save(
+      "report",
+      "missing-report",
+      { payload: "m".repeat(600_000) },
+      0,
+    );
+    await a.save(
+      "report",
+      "tampered-report",
+      { payload: "t".repeat(600_000) },
+      0,
+    );
+    const rows = (await env.DOSSIER_DB.prepare(
+      "SELECT id,value FROM dossier_records WHERE owner_id=? AND kind='report' AND id IN (?,?)",
+    )
+      .bind("a", "missing-report", "tampered-report")
+      .all()) as { results: { id: string; value: string }[] };
+    const pointers = new Map<string, { key: string; length: number }>(
+      rows.results.map((row) => {
+        const pointer = JSON.parse(row.value).__saviaAggregateBlob;
+        return [row.id, { key: pointer.key, length: pointer.length }];
+      }),
+    );
+    await a.deleteFile(pointers.get("missing-report")!.key);
+    await a.putFile(
+      pointers.get("tampered-report")!.key,
+      new TextEncoder().encode(
+        "z".repeat(pointers.get("tampered-report")!.length),
+      ),
+      "application/json",
+    );
+
+    await expect(a.read("report", "missing-report")).rejects.toMatchObject({
+      code: "AGGREGATE_BLOB_MISSING",
+    });
+    await expect(a.read("report", "tampered-report")).rejects.toMatchObject({
+      code: "AGGREGATE_BLOB_CORRUPT",
+    });
+  });
+
+  it("keeps large report writes revision-checked and preserves the nonreport record limit", async () => {
+    const original = { payload: "original".repeat(80_000) };
+    await a.save("report", "revisioned-report", original, 0);
+    await expect(
+      a.save(
+        "report",
+        "revisioned-report",
+        { payload: "stale".repeat(80_000) },
+        0,
+      ),
+    ).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
+    expect(
+      (await a.read<typeof original>("report", "revisioned-report")).value,
+    ).toEqual(original);
+    await expect(
+      a.save(
+        "company",
+        "too-large-company",
+        { payload: "x".repeat(500_001) },
+        0,
+      ),
+    ).rejects.toMatchObject({ code: "RECORD_TOO_LARGE" });
+    await expect(
+      a.save(
+        "report",
+        "oversized-report",
+        { payload: "x".repeat(20_000_000) },
+        0,
+      ),
+    ).rejects.toMatchObject({ code: "RECORD_TOO_LARGE" });
+  });
+
+  it("spills large assessments with the same owner-scoped integrity checks", async () => {
+    const assessment = {
+      assessmentId: "assessment-large",
+      dossierId: "CO1.REQ.ASSESSMENT",
+      findings: "assessment finding ".repeat(40_000),
+    };
+    await a.save("assessment", assessment.assessmentId, assessment, 0);
+    expect(
+      (await a.read<typeof assessment>("assessment", assessment.assessmentId))
+        .value,
+    ).toEqual(assessment);
+    expect(
+      (
+        await a.allMatching<typeof assessment>("assessment", "assessmentId", [
+          assessment.assessmentId,
+        ])
+      ).map((r) => r.value),
+    ).toEqual([assessment]);
+    expect(
+      (
+        await a.allMatching<typeof assessment>("assessment", "dossierId", [
+          assessment.dossierId,
+        ])
+      ).map((r) => r.value),
+    ).toEqual([assessment]);
+    await expect(
+      b.read("assessment", assessment.assessmentId),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
   it("supports outbox recovery, exclusive claims, renewal, retry and cancellation", async () => {
     const j = await a.enqueueJob({
       kind: "inventory",

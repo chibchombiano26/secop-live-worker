@@ -913,7 +913,13 @@ describe("persisted dossier, assessment and chat workflow", () => {
           };
         }
         if (input.purpose === "cross_document_review") oldCalls++;
-        return model.generate(input);
+        const generated = await model.generate(input);
+        return input.purpose === "extract_requirements"
+          ? {
+              ...(generated as object),
+              summary: "Complete source summary. ".repeat(125),
+            }
+          : generated;
       },
     };
     const report = await synthesizeDossier(repo, d.id, 1, provider);
@@ -924,6 +930,10 @@ describe("persisted dossier, assessment and chat workflow", () => {
     expect(report.coverage.indexed).toBe(2);
     expect(report.requirementIds).toHaveLength(213);
     expect(report.citations).toHaveLength(213);
+    expect(JSON.stringify(report).length).toBeGreaterThan(500_000);
+    const persistedReport = await repo.read<any>("report", `${d.id}:1`);
+    expect(persistedReport.value).toEqual(report);
+    expect((await repo.readDossier(d.id)).value.needsSynthesis).toBe(false);
     const saved = await Promise.all(
       report.requirementIds.map((id) => repo.read<any>("requirement", id)),
     );
