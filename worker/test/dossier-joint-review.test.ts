@@ -1053,6 +1053,97 @@ describe("reviewJointRequirements", () => {
     expect(reviewCalls).toBe(3);
   });
 
+  it.each([200, 210])(
+    "subdivides a saturated joint response with %i candidates and replays its split marker",
+    async (parentCandidateCount) => {
+      const requirements = Array.from({ length: 21 }, (_, index) =>
+        req(`Requirement ${index}`, `doc-${index}`),
+      );
+      const store = cache();
+      let reviewCalls = 0;
+      let verificationCalls = 0;
+      const model = {
+        id: `candidate-cap-${parentCandidateCount}-model`,
+        generate: async (input: any) => {
+          if (input.purpose === "joint_conflict_verification") {
+            verificationCalls++;
+            return {
+              decision: "unconfirmed",
+              reason: "The evidence does not establish a conflict.",
+              citationIds: [],
+            };
+          }
+          reviewCalls++;
+          const rows = input.context.requirements;
+          const { left, right } =
+            input.outputSchema.properties.candidates.items.properties;
+          const leftIndices = rows
+            .map((row: any[]) => row[0])
+            .filter(
+              (index: number) => index >= left.minimum && index <= left.maximum,
+            );
+          const rightIndices = rows
+            .map((row: any[]) => row[0])
+            .filter(
+              (index: number) =>
+                index >= right.minimum && index <= right.maximum,
+            );
+          const pairs =
+            left.minimum === right.minimum && left.maximum === right.maximum
+              ? leftIndices.flatMap((a: number, i: number) =>
+                  leftIndices.slice(i + 1).map((b: number) => [a, b]),
+                )
+              : leftIndices.flatMap((a: number) =>
+                  rightIndices.map((b: number) => [a, b]),
+                );
+          const candidates = pairs.map(([a, b]: number[]) => ({
+            left: a,
+            right: b,
+            kind: "conflict",
+            reason: "Compare the stated requirements.",
+          }));
+          return {
+            summary: "Compare the grouped requirements.",
+            candidates:
+              rows.length === 21
+                ? candidates.slice(0, parentCandidateCount)
+                : candidates,
+          };
+        },
+      };
+
+      const first = await reviewJointRequirements(
+        requirements,
+        model,
+        {},
+        store,
+      );
+      expect(first.metrics.candidates).toBe((21 * 20) / 2);
+      expect(first.metrics.completedVerifications).toBe((21 * 20) / 2);
+      expect(verificationCalls).toBe((21 * 20) / 2);
+      expect(reviewCalls).toBeGreaterThan(1);
+      expect(
+        [...store.values.values()].some(
+          (value) =>
+            typeof value === "object" &&
+            value !== null &&
+            "split" in value &&
+            value.split === true,
+        ),
+      ).toBe(true);
+      const callsAfterFirstRun = reviewCalls + verificationCalls;
+
+      const replay = await reviewJointRequirements(
+        requirements,
+        model,
+        {},
+        store,
+      );
+      expect(reviewCalls + verificationCalls).toBe(callsAfterFirstRun);
+      expect(replay.candidateReviews).toEqual(first.candidateReviews);
+    },
+  );
+
   it("rejects a single requirement that cannot fit without truncating its wording", async () => {
     const huge = req("X".repeat(49_000), "doc-a");
     let called = false;
@@ -1128,5 +1219,43 @@ describe("reviewJointRequirements", () => {
     );
     expect(reviewCalls).toBe(callsAfterFirstRun);
     expect(replay.metrics.comparedPairs).toBe((32 * 31) / 2);
+  });
+
+  it("packs larger safe blocks under the unchanged request limit without losing pairs", async () => {
+    const requirements = Array.from({ length: 20 }, (_, index) =>
+      req(`Requirement ${index}: ${"x".repeat(4_300)}`, `doc-${index}`),
+    );
+    const offeredPairs = new Set<string>();
+    let maxRequestChars = 0;
+    const model = {
+      id: "larger-joint-blocks",
+      generate: async (input: any) => {
+        maxRequestChars = Math.max(maxRequestChars, JSON.stringify(input).length);
+        const indices = input.context.requirements.map((row: any[]) => row[0]);
+        const { left, right } =
+          input.outputSchema.properties.candidates.items.properties;
+        const canUse = (index: number, bounds: any) =>
+          index >= bounds.minimum && index <= bounds.maximum;
+        for (const [offset, leftIndex] of indices.entries())
+          for (const rightIndex of indices.slice(offset + 1))
+            if (
+              (canUse(leftIndex, left) && canUse(rightIndex, right)) ||
+              (canUse(rightIndex, left) && canUse(leftIndex, right))
+            )
+              offeredPairs.add(`${leftIndex}:${rightIndex}`);
+        return { summary: "Compared group.", candidates: [] };
+      },
+    };
+
+    const result = await reviewJointRequirements(
+      requirements,
+      model,
+      {},
+      cache(),
+    );
+    expect(result.metrics.reviewGroups).toBeLessThan(15);
+    expect(result.metrics.comparedPairs).toBe((20 * 19) / 2);
+    expect(offeredPairs.size).toBe((20 * 19) / 2);
+    expect(maxRequestChars).toBeLessThanOrEqual(48_000);
   });
 });

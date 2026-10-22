@@ -203,9 +203,15 @@ right and cross comparisons; cross-block groups divide one scope at a time. This
 preserves every planned pair, including pairs spanning distant split boundaries.
 The split marker is cached before child reviews begin, and successful leaves are
 cached separately, so a resumed job does not repeat a truncated parent call.
-Recursive child work is sequential inside each of the existing eight workers.
+Recursive child work is sequential inside each configured review worker.
 Split aggregates may exceed one response's candidate and summary limits, so only
 bounded leaf responses are schema-validated and cached as model output.
+The planner packs blocks toward 27,000 characters while keeping each actual
+request below the unchanged 48,000-character cap. A response with exactly 200
+candidates, or one rejected for exceeding that schema cap, is treated as
+saturated: its candidates are discarded, a split marker is cached, and its
+children are reviewed. This prevents the model output ceiling from silently
+clipping candidate coverage, and replay continues from cached split markers.
 
 Uncached group inference narrows the response schema's candidate indices to its
 original source-block ranges. Cross-block groups use disjoint left/right ranges;
