@@ -57,6 +57,70 @@ describe("bounded complete dossier extraction", () => {
     expect(await extractRequirements([source], model, cache)).toEqual(result);
     expect(visited).toHaveLength(0);
   });
+  it("splits a parent after repeated invalid citations and replays its marker and valid children", async () => {
+    const source = {
+      ...chunks[0],
+      page: 88,
+      text: "Requirement phrase. ".repeat(35),
+    };
+    const values = new Map<string, unknown>();
+    const cache = {
+      get: async (key: string) => values.get(key) ?? null,
+      put: async (key: string, value: unknown) => {
+        values.set(key, value);
+      },
+    };
+    const calls: number[] = [];
+    const model = {
+      id: "test",
+      generate: async (input: any) => {
+        const chunk = input.evidence[0] as EvidenceChunk;
+        calls.push(chunk.text.length);
+        if (chunk.text.length > 500) {
+          const invalidParentPart = part(chunk);
+          return {
+            ...invalidParentPart,
+            requirements: invalidParentPart.requirements.map((requirement) => ({
+              ...requirement,
+              citations: [
+                {
+                  documentVersionId: chunk.documentVersionId,
+                  page: chunk.page,
+                  excerpt: "not found in this source",
+                },
+              ],
+            })),
+          };
+        }
+        return part(chunk);
+      },
+    };
+
+    const result = await extractRequirements([source], model, cache);
+    expect(calls).toEqual([700, 700, 450, 450]);
+    expect(result.requirements).toHaveLength(2);
+    expect(
+      result.requirements[0].wording +
+        result.requirements[1].wording.slice(200),
+    ).toBe(source.text);
+    expect(
+      result.requirements.every(
+        (requirement) =>
+          requirement.citations[0].page === 88 &&
+          source.text.includes(requirement.citations[0].excerpt),
+      ),
+    ).toBe(true);
+    expect(
+      [...values.values()].filter(
+        (value) =>
+          (value as { splitFragment?: number }).splitFragment === 1,
+      ),
+    ).toHaveLength(1);
+
+    const replay = await extractRequirements([source], model, cache);
+    expect(replay).toEqual(result);
+    expect(calls).toEqual([700, 700, 450, 450]);
+  });
   it("fails explicitly when a minimal fragment still truncates rather than publishing partial requirements", async () => {
     await expect(extractRequirements([chunks[0]], { id: "test", generate: async () => {
       throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
