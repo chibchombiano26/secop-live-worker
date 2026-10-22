@@ -5,6 +5,7 @@ import { splitEvidence, type EvidenceChunk } from "./extraction";
 import type { DocumentVersion } from "./inventory";
 import type { ModelProvider } from "./model";
 import { sha256 } from "./downloads";
+import { DossierAnalysisCache } from "./analysis-cache";
 import { reviewJointRequirements } from "./joint-review";
 export const citationSchema = z.object({
   documentVersionId: z.string().min(1).max(200),
@@ -133,6 +134,8 @@ export async function extractRequirements(
   cache?: {
     get: (key: string) => Promise<unknown | null>;
     put: (key: string, value: unknown) => Promise<void>;
+    preload?: (keys: string[]) => Promise<void>;
+    release?: (keys: string[]) => void;
   },
 ) {
   type Part = z.infer<typeof partSchema>;
@@ -149,8 +152,10 @@ export async function extractRequirements(
     return output;
   });
   const inFlight = new Map<string, Promise<Part[]>>();
-  async function extractFragment(chunk: EvidenceChunk): Promise<Part[]> {
-    const key = await sha256(`${model.id}:${JSON.stringify(chunk)}`);
+  async function extractFragment(
+    chunk: EvidenceChunk,
+    key: string,
+  ): Promise<Part[]> {
     let pending = inFlight.get(key);
     if (!pending) {
       pending = extractFragmentForKey(chunk, key);
@@ -161,14 +166,18 @@ export async function extractRequirements(
   async function splitFragment(chunk: EvidenceChunk): Promise<Part[]> {
     const middle = Math.floor(chunk.text.length / 2);
     // Overlap preserves conditions that cross the split; source metadata is unchanged.
-    const left = await extractFragment({
+    const leftChunk = {
       ...chunk,
       text: chunk.text.slice(0, middle + 100),
-    });
-    const right = await extractFragment({
+    };
+    const rightChunk = {
       ...chunk,
       text: chunk.text.slice(middle - 100),
-    });
+    };
+    const leftKey = await sha256(`${model.id}:${JSON.stringify(leftChunk)}`);
+    const left = await extractFragment(leftChunk, leftKey);
+    const rightKey = await sha256(`${model.id}:${JSON.stringify(rightChunk)}`);
+    const right = await extractFragment(rightChunk, rightKey);
     return [...left, ...right];
   }
   async function extractFragmentForKey(
@@ -240,28 +249,67 @@ export async function extractRequirements(
     if (!cached) await cache?.put(key, result);
     return result;
   }
-  let next = 0;
-  let failed = false;
-  let failure: unknown;
-  async function visitFragments() {
-    while (!failed && next < fragments.length) {
-      const index = next++;
-      try {
-        parts[index] = await extractFragment(fragments[index]);
-      } catch (error) {
-        if (!failed) {
-          failed = true;
-          failure = error;
+  async function visitFragmentWindow(
+    start: number,
+    end: number,
+    keys: string[],
+  ): Promise<void> {
+    try {
+      await cache?.preload?.(keys);
+    } catch (error) {
+      if (
+        !(error instanceof DossierError) ||
+        error.code !== "CORPUS_CAPACITY_LIMIT" ||
+        end - start < 2
+      )
+        throw error;
+      const middle = start + Math.ceil((end - start) / 2);
+      await visitFragmentWindow(start, middle, keys.slice(0, middle - start));
+      await visitFragmentWindow(middle, end, keys.slice(middle - start));
+      return;
+    }
+    let next = start;
+    let failed = false;
+    let failure: unknown;
+    async function visitFragments() {
+      while (!failed && next < end) {
+        const index = next++;
+        try {
+          parts[index] = await extractFragment(
+            fragments[index],
+            keys[index - start],
+          );
+        } catch (error) {
+          if (!failed) {
+            failed = true;
+            failure = error;
+          }
         }
       }
     }
+    // Settle in-flight cache writes before yielding the lease on any failure.
+    // Indexed results retain source order even when inference finishes out of order.
+    try {
+      await Promise.all(
+        Array.from({ length: Math.min(8, end - start) }, visitFragments),
+      );
+    } finally {
+      cache?.release?.(keys);
+    }
+    if (failed) throw failure;
   }
-  // Settle in-flight cache writes before yielding the lease on any failure.
-  // Indexed results retain source order even when inference finishes out of order.
-  await Promise.all(
-    Array.from({ length: Math.min(8, fragments.length) }, visitFragments),
-  );
-  if (failed) throw failure;
+  // Prefetch only exact keys for the current source fragments, then release
+  // the bounded window before moving on to the next one.
+  const PREFETCH_WINDOW = 80;
+  for (let start = 0; start < fragments.length; start += PREFETCH_WINDOW) {
+    const end = Math.min(start + PREFETCH_WINDOW, fragments.length);
+    const keys = await Promise.all(
+      fragments
+        .slice(start, end)
+        .map((chunk) => sha256(`${model.id}:${JSON.stringify(chunk)}`)),
+    );
+    await visitFragmentWindow(start, end, keys);
+  }
   return {
     requirements: parts.flat().flatMap((p) => p.requirements),
     summaries: parts.flat().map((p) => p.summary),
@@ -342,11 +390,8 @@ export async function synthesizeDossier(
       .map((d) => d.id),
     catalogOnly: true,
   };
-  // Preload only validated analysis cache records in bounded owner-scoped reads.
-  // Exact content hashes still select which entries belong to this source input.
-  const analysisCache = new Map(
-    (await repo.readAnalysisCache()).map((record) => [record.id, record.value]),
-  );
+  // Read exact cache keys lazily; unrelated owner cache volume cannot block work.
+  const analysisCache = new DossierAnalysisCache(repo);
   let fragmentsVisited = 0;
   let extractionCacheHits = 0;
   await checkpoint?.({
@@ -356,7 +401,7 @@ export async function synthesizeDossier(
   const parts = await extractRequirements(chunks, model, {
     get: async (key) => {
       try {
-        const cached = analysisCache.get(`part.${key}`) ?? null;
+        const cached = await analysisCache.get(`part.${key}`);
         if (cached !== null) extractionCacheHits++;
         return cached;
       } finally {
@@ -370,9 +415,10 @@ export async function synthesizeDossier(
       }
     },
     put: async (key, value) => {
-      await repo.upsert("report", `part.${key}`, value);
-      analysisCache.set(`part.${key}`, value);
+      await analysisCache.put(`part.${key}`, value);
     },
+    preload: (keys) => analysisCache.preload(keys.map((key) => `part.${key}`)),
+    release: (keys) => analysisCache.release(keys.map((key) => `part.${key}`)),
   });
   let previousReviewPhase: unknown;
   const joint = await reviewJointRequirements(
@@ -380,11 +426,8 @@ export async function synthesizeDossier(
     model,
     coverage,
     {
-      get: async (key) => analysisCache.get(`joint.${key}`) ?? null,
-      put: async (key, value) => {
-        await repo.upsert("report", `joint.${key}`, value);
-        analysisCache.set(`joint.${key}`, value);
-      },
+      get: async (key) => analysisCache.get(`joint.${key}`),
+      put: async (key, value) => analysisCache.put(`joint.${key}`, value),
     },
     checkpoint
       ? async (progress) => {
