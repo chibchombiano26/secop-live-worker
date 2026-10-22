@@ -799,7 +799,7 @@ export async function reviewJointRequirements(
         verificationSchemaForIds([...citationMap.keys()]),
       ),
     };
-    const verificationInputChars = checkRequest(verificationInput);
+    const verificationInputChars = requestChars(verificationInput);
     const key = await sha256(
       `joint-verify:v1:${model.id}:${JSON.stringify(verificationInput)}`,
     );
@@ -814,7 +814,15 @@ export async function reviewJointRequirements(
       } catch {
         throw invalidOutput();
       }
+    } else if (verificationInputChars > REQUEST_LIMIT) {
+      verified = verificationSchema.parse({
+        decision: "unconfirmed",
+        reason:
+          "La evidencia citada excede el límite de contexto para verificación; se conserva como no confirmada.",
+        citationIds: [],
+      });
     } else {
+      checkRequest(verificationInput);
       maxRequestChars = Math.max(maxRequestChars, verificationInputChars);
       const raw = await model.generate(verificationInput);
       try {
