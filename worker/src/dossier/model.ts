@@ -464,11 +464,22 @@ export class ConfiguredModel implements ModelProvider {
             };
             const choice = envelope.choices[0];
             finishReason = safeFinishReason(choice?.finish_reason);
-            if (finishReason === "length")
-              throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
             const content = choice?.message?.content;
             const contentLength =
               typeof content === "string" ? content.length : undefined;
+            if (finishReason === "length")
+              throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true, {
+                provider,
+                phase: "output_truncated",
+                elapsedMs: Math.max(0, Date.now() - requestStarted),
+                shape: {
+                  contentType,
+                  ...(contentLength === undefined
+                    ? {}
+                    : { length: contentLength }),
+                },
+                finishReason,
+              });
             if (finishReason === "error")
               throw providerError("MODEL_UNAVAILABLE", true, contentLength);
             if (finishReason === "content_filter")

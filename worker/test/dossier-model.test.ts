@@ -152,6 +152,14 @@ describe("configured model boundaries", () => {
       .catch((error) => error);
 
     expect(failure).toMatchObject({ code: "MODEL_OUTPUT_TRUNCATED" });
+    expect(failure).toMatchObject({
+      diagnostic: {
+        provider: "Workers AI",
+        phase: "output_truncated",
+        finishReason: "length",
+        shape: { contentType: "workers_ai", length: 15 },
+      },
+    });
     expect(JSON.stringify(failure)).not.toContain("private partial");
     expect(run).toHaveBeenCalledTimes(1);
   });
