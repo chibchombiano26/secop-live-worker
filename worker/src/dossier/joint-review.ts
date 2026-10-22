@@ -72,7 +72,12 @@ type Candidate = {
   kind: "conflict" | "amendment";
   reason: string;
 };
-type Group = { indices: number[]; summaryAllowed: boolean };
+type CandidateScopes = { left: number[]; right: number[] };
+type Group = {
+  indices: number[];
+  summaryAllowed: boolean;
+  scopes?: CandidateScopes;
+};
 type CompactRequirement = [
   number,
   string,
@@ -212,7 +217,7 @@ function reviewInput(
       ),
     },
     instructions:
-      "Return {summary:string,candidates:[{left:number,right:number,kind:'conflict'|'amendment',reason:string}]}. Compare every pair in the supplied requirements. Each requirement row is [globalIndex,wording,category,mandatory,lot,deadline,rule,sourceIndexes]; each source row is [documentIndex,page|null,section|null], and the documents array maps documentIndex to the full version ID. Indices are original global requirement indices. The full source excerpts are reserved for verification. Do not state counts of requirements, conflicts, amendments or documents in the summary: these are computed by the backend after verification. Include scope and deliverables, eligibility, experience, financial thresholds with units and periods, required documents, deadlines, evaluation, guarantees and missing evidence when established. Write a concise Spanish briefing only from stated requirements and preserve stated categories, mandatory status, lots, deadlines and rules. Mention partial, pending and review-required coverage accurately; never infer that an item is absent. Suggest only plausible conflicts or explicit amendments for evidence review. A later date alone is not an amendment. Do not assert an unverified conflict or amendment as fact. Keep summary under 6,000 characters and candidates under 200; if the result would exceed those bounds, return MODEL_OUTPUT_TRUNCATED by not producing a partial result.",
+      "Return {summary:string,candidates:[{left:number,right:number,kind:'conflict'|'amendment',reason:string}]}. Compare every allowed pair: when the left and right candidate index ranges in the output schema match, compare every unordered pair in that range; when the ranges differ, compare every left-to-right pair across those ranges. Do not omit distant pairs within the allowed scope. Each requirement row is [globalIndex,wording,category,mandatory,lot,deadline,rule,sourceIndexes]; each source row is [documentIndex,page|null,section|null], and the documents array maps documentIndex to the full version ID. Indices are original global requirement indices. The full source excerpts are reserved for verification. Do not state counts of requirements, conflicts, amendments or documents in the summary: these are computed by the backend after verification. Include scope and deliverables, eligibility, experience, financial thresholds with units and periods, required documents, deadlines, evaluation, guarantees and missing evidence when established. Write a concise Spanish briefing only from stated requirements and preserve stated categories, mandatory status, lots, deadlines and rules. Mention partial, pending and review-required coverage accurately; never infer that an item is absent. Suggest only plausible conflicts or explicit amendments for evidence review. A later date alone is not an amendment. Do not assert an unverified conflict or amendment as fact. Keep summary under 6,000 characters and candidates under 200; if the result would exceed those bounds, return MODEL_OUTPUT_TRUNCATED by not producing a partial result.",
     outputSchema: z.toJSONSchema(reviewSchema),
   };
 }
@@ -390,38 +395,134 @@ export async function reviewJointRequirements(
   });
   // Joint output grows with the pairs under review, so a single large
   // group can exceed one bounded inference even when its input fits.
-  // Truncated groups halve (with boundary overlap so edge pairs are still
-  // compared; duplicates merge by pair key) instead of failing the dossier.
-  const OUTPUT_SPLIT_OVERLAP = 4;
+  // Truncated within-group reviews split into two diagonal groups plus their
+  // cross product. Cross-block groups split one axis at a time, so every
+  // planned pair remains covered while each inference gets smaller.
+  function scopesForGroup(group: Group): CandidateScopes {
+    if (group.scopes) return group.scopes;
+    if (group.summaryAllowed)
+      return { left: group.indices, right: group.indices };
+    try {
+      return candidateScopes(group, plan.blocks);
+    } catch (error) {
+      if (!(error instanceof DossierError)) throw error;
+      return { left: group.indices, right: group.indices };
+    }
+  }
+  function isWithinGroup(scopes: CandidateScopes): boolean {
+    return (
+      scopes.left.length === scopes.right.length &&
+      scopes.left.every((index, position) => index === scopes.right[position])
+    );
+  }
+  function splitGroup(group: Group, scopes: CandidateScopes): Group[] {
+    if (isWithinGroup(scopes)) {
+      if (scopes.left.length < 2) return [];
+      const middle = Math.ceil(scopes.left.length / 2);
+      const left = scopes.left.slice(0, middle);
+      const right = scopes.left.slice(middle);
+      return [
+        ...(left.length
+          ? [{
+              indices: left,
+              summaryAllowed: group.summaryAllowed,
+              scopes: { left, right: left },
+            }]
+          : []),
+        ...(left.length && right.length
+          ? [{
+              indices: [...left, ...right],
+              summaryAllowed: false,
+              scopes: { left, right },
+            }]
+          : []),
+        ...(right.length
+          ? [{
+              indices: right,
+              summaryAllowed: group.summaryAllowed,
+              scopes: { left: right, right },
+            }]
+          : []),
+      ];
+    }
+    const splitLeft = scopes.left.length >= scopes.right.length;
+    const axis = splitLeft ? scopes.left : scopes.right;
+    if (axis.length < 2) return [];
+    const middle = Math.ceil(axis.length / 2);
+    const first = axis.slice(0, middle);
+    const second = axis.slice(middle);
+    const makeCrossGroup = (
+      left: number[],
+      right: number[],
+      summaryAllowed: boolean,
+    ): Group => ({
+      indices: [...new Set([...left, ...right])],
+      summaryAllowed,
+      scopes: { left, right },
+    });
+    return splitLeft
+      ? [
+          makeCrossGroup(first, scopes.right, group.summaryAllowed),
+          makeCrossGroup(second, scopes.right, false),
+        ]
+      : [
+          makeCrossGroup(scopes.left, first, group.summaryAllowed),
+          makeCrossGroup(scopes.left, second, false),
+        ];
+  }
+  async function reviewChildren(children: Group[]) {
+    const candidates: Candidate[] = [];
+    const summaries: string[] = [];
+    // Keep recursive work sequential within each worker. The outer plan
+    // already runs at most eight workers concurrently.
+    for (const child of children) {
+      const result = await reviewOne(child);
+      if (result.summary.trim()) summaries.push(result.summary.trim());
+      candidates.push(...result.candidates);
+    }
+    return { summary: summaries.join("\n"), candidates };
+  }
   async function reviewOne(group: Group): Promise<{
     summary: string;
     candidates: Candidate[];
   }> {
     const input = reviewInput(requirements, group, index, coverage);
+    const scopes = scopesForGroup(group);
     const key = await sha256(
-      `joint-review:v1:${model.id}:${JSON.stringify(input)}`,
+      `joint-review:v2:${model.id}:${JSON.stringify({
+        input,
+        scopes,
+        summaryAllowed: group.summaryAllowed,
+      })}`,
     );
     const cached = await cache.get(key);
     if (cached !== null) {
+      if (
+        typeof cached === "object" &&
+        cached !== null &&
+        "split" in cached &&
+        cached.split === true
+      ) {
+        const children = splitGroup(group, scopesForGroup(group));
+        if (!children.length)
+          throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
+        return reviewChildren(children);
+      }
       const result = reviewSchema.parse(cached);
+      for (const candidate of result.candidates) {
+        if (
+          candidate.left === candidate.right ||
+          !scopes.left.includes(candidate.left) ||
+          !scopes.right.includes(candidate.right)
+        ) {
+          logInvalidGroupCandidate(groupLogIndex(group), candidate, group);
+          throw invalidOutput();
+        }
+      }
       return {
         summary: group.summaryAllowed ? result.summary : "",
         candidates: result.candidates,
       };
-    }
-    // Split halves can sit inside a single plan block, where block
-    // scoping has no far side. Fall back to the half's own range; pair
-    // membership is still validated before merging.
-    let scopes: { left: number[]; right: number[] };
-    if (group.summaryAllowed) {
-      scopes = { left: group.indices, right: group.indices };
-    } else {
-      try {
-        scopes = candidateScopes(group, plan.blocks);
-      } catch (error) {
-        if (!(error instanceof DossierError)) throw error;
-        scopes = { left: group.indices, right: group.indices };
-      }
     }
     const generatedInput = boundCandidateIndices(input, scopes);
     const generatedInputChars = checkRequest(generatedInput);
@@ -442,49 +543,19 @@ export async function reviewJointRequirements(
     } catch (error) {
       if (
         !(error instanceof DossierError) ||
-        error.code !== "MODEL_OUTPUT_TRUNCATED" ||
-        group.indices.length < 2
+        error.code !== "MODEL_OUTPUT_TRUNCATED"
       )
         throw error;
-      const middle = Math.ceil(group.indices.length / 2);
-      // Keep the overlap small relative to the group so both halves
-      // strictly shrink and the recursion always terminates.
-      const overlap = Math.min(
-        OUTPUT_SPLIT_OVERLAP,
-        Math.floor(group.indices.length / 4),
-      );
-      const left: Group = {
-        indices: group.indices.slice(0, middle + overlap),
-        summaryAllowed: group.summaryAllowed,
-      };
-      const right: Group = {
-        indices: group.indices.slice(middle - overlap),
-        summaryAllowed: false,
-      };
-      if (
-        left.indices.length >= group.indices.length ||
-        right.indices.length >= group.indices.length
-      )
-        throw error;
-      const [first, second] = await Promise.all([
-        reviewOne(left),
-        reviewOne(right),
-      ]);
-      const merged = {
-        summary: [first.summary, second.summary]
-          .map((part) => part.trim())
-          .filter(Boolean)
-          .join("\n"),
-        candidates: [...first.candidates, ...second.candidates],
-      };
-      await cache.put(key, { summary: merged.summary, candidates: merged.candidates });
-      return merged;
+      const children = splitGroup(group, scopes);
+      if (!children.length) throw error;
+      await cache.put(key, { split: true });
+      return reviewChildren(children);
     }
     for (const candidate of result.candidates) {
       if (
         candidate.left === candidate.right ||
-        !group.indices.includes(candidate.left) ||
-        !group.indices.includes(candidate.right)
+        !scopes.left.includes(candidate.left) ||
+        !scopes.right.includes(candidate.right)
       ) {
         logInvalidGroupCandidate(groupLogIndex(group), candidate, group);
         throw invalidOutput();
@@ -507,8 +578,8 @@ export async function reviewJointRequirements(
     for (const candidate of merged.candidates) {
       if (
         candidate.left === candidate.right ||
-        !group.indices.includes(candidate.left) ||
-        !group.indices.includes(candidate.right)
+        !scopesForGroup(group).left.includes(candidate.left) ||
+        !scopesForGroup(group).right.includes(candidate.right)
       ) {
         logInvalidGroupCandidate(groupIndex, candidate, group);
         throw invalidOutput();
@@ -561,8 +632,8 @@ export async function reviewJointRequirements(
     for (const candidate of result.candidates) {
       if (
         candidate.left === candidate.right ||
-        !group.indices.includes(candidate.left) ||
-        !group.indices.includes(candidate.right)
+        !scopesForGroup(group).left.includes(candidate.left) ||
+        !scopesForGroup(group).right.includes(candidate.right)
       )
         throw invalidOutput();
       const pair =

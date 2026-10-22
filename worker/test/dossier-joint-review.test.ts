@@ -781,14 +781,23 @@ describe("reviewJointRequirements", () => {
           truncations++;
           throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
         }
+        const schema = input.outputSchema.properties.candidates.items.properties;
+        const leftIndices = indices.filter(
+          (i: number) => i >= schema.left.minimum && i <= schema.left.maximum,
+        );
+        const rightIndices = indices.filter(
+          (i: number) => i >= schema.right.minimum && i <= schema.right.maximum,
+        );
         const pairs = [];
-        for (let a = 0; a + 1 < indices.length; a++)
-          pairs.push({
-            left: indices[a],
-            right: indices[a + 1],
-            kind: "conflict",
-            reason: "Neighbor obligations overlap.",
-          });
+        for (const left of leftIndices)
+          for (const right of rightIndices)
+            if (left < right && right - left === 1)
+              pairs.push({
+                left,
+                right,
+                kind: "conflict",
+                reason: "Neighbor obligations overlap.",
+              });
         return {
           summary: `Compared ${indices.length} requirements.`,
           candidates: pairs,
@@ -814,6 +823,211 @@ describe("reviewJointRequirements", () => {
       store,
     );
     expect(reviewCalls).toBe(reviewCallsAfterFirstRun);
+  });
+
+  it("compares pairs spanning both sides of a truncated group split", async () => {
+    const requirements = Array.from({ length: 20 }, (_, i) =>
+      req(`Requirement ${i}`, `doc-${i}`),
+    );
+    const model = {
+      id: "far-pair-review-model",
+      generate: async (input: any) => {
+        if (input.purpose === "joint_conflict_verification")
+          return {
+            decision: "unconfirmed",
+            reason: "Further source verification is required.",
+            citationIds:
+              input.outputSchema.properties.citationIds.items.enum.slice(0, 2),
+          };
+        const indices = input.context.requirements.map((r: any[]) => r[0]);
+        if (indices.length > 6)
+          throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
+        return {
+          summary: "Compared requirements.",
+          candidates:
+            indices.includes(0) &&
+            indices.includes(19) &&
+            indices[0] === 0 &&
+            input.outputSchema.properties.candidates.items.properties.left
+              .minimum === 0 &&
+            input.outputSchema.properties.candidates.items.properties.right
+              .maximum === 19
+              ? [
+                  {
+                    left: 0,
+                    right: 19,
+                    kind: "conflict",
+                    reason: "Far pair.",
+                  },
+                ]
+              : [],
+        };
+      },
+    };
+    const result = await reviewJointRequirements(requirements, model, {}, cache());
+    expect(result.candidateReviews.map(({ left, right }) => [left, right])).toContainEqual([0, 19]);
+  });
+
+  it("retains summary content from the right half of a truncated group", async () => {
+    const requirements = Array.from({ length: 20 }, (_, i) =>
+      req(`Requirement ${i}`, `doc-${i}`),
+    );
+    const model = {
+      id: "right-half-summary-model",
+      generate: async (input: any) => {
+        if (input.purpose === "joint_conflict_verification")
+          return {
+            decision: "unconfirmed",
+            reason: "Further source verification is required.",
+            citationIds:
+              input.outputSchema.properties.citationIds.items.enum.slice(0, 2),
+          };
+        const indices = input.context.requirements.map((r: any[]) => r[0]);
+        if (indices.length > 6)
+          throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
+        return {
+          summary: indices.includes(19)
+            ? "RIGHTMOST-REQUIREMENT-SUMMARY"
+            : "Other requirements.",
+          candidates: [],
+        };
+      },
+    };
+    const result = await reviewJointRequirements(requirements, model, {}, cache());
+    expect(result.summaries.join(" ")).toContain("RIGHTMOST-REQUIREMENT-SUMMARY");
+  });
+
+  it("retains original cross-block scopes while recursively splitting", async () => {
+    const requirements = Array.from({ length: 10 }, (_, i) =>
+      req(`Requirement ${i} ${"detail ".repeat(1_100)}`, `doc-${i}`),
+    );
+    let truncatedCrossBlocks = 0;
+    let foundFarPair = false;
+    const model = {
+      id: "cross-block-split-model",
+      generate: async (input: any) => {
+        if (input.purpose === "joint_conflict_verification")
+          return {
+            decision: "unconfirmed",
+            reason: "Further source verification is required.",
+            citationIds:
+              input.outputSchema.properties.citationIds.items.enum.slice(0, 2),
+          };
+        const indices = input.context.requirements.map((r: any[]) => r[0]);
+        const schema = input.outputSchema.properties.candidates.items.properties;
+        const left = indices.filter(
+          (i: number) => i >= schema.left.minimum && i <= schema.left.maximum,
+        );
+        const right = indices.filter(
+          (i: number) => i >= schema.right.minimum && i <= schema.right.maximum,
+        );
+        if (indices.length > 2) {
+          truncatedCrossBlocks++;
+          throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
+        }
+        if (left.includes(0) && right.includes(9)) foundFarPair = true;
+        return {
+          summary: "Compared scoped requirements.",
+          candidates: left.flatMap((a: number) =>
+            right
+              .filter((b: number) => a < b && a === 0 && b === 9)
+              .map((b: number) => ({
+                left: a,
+                right: b,
+                kind: "conflict",
+                reason: "Cross-block pair.",
+              })),
+          ),
+        };
+      },
+    };
+    const result = await reviewJointRequirements(requirements, model, {}, cache());
+    expect(truncatedCrossBlocks).toBeGreaterThan(0);
+    expect(foundFarPair).toBe(true);
+    expect(
+      result.candidateReviews.map(({ left, right }) => [left, right]),
+    ).toContainEqual([0, 9]);
+  });
+
+  it("replays aggregates larger than one response without parsing them as a leaf", async () => {
+    const requirements = Array.from({ length: 26 }, (_, i) =>
+      req(`Requirement ${i}`, `doc-${i}`),
+    );
+    const store = cache();
+    let reviewCalls = 0;
+    const model = {
+      id: "large-split-review-model",
+      generate: async (input: any) => {
+        if (input.purpose === "joint_conflict_verification")
+          return {
+            decision: "unconfirmed",
+            reason: "Further source verification is required.",
+            citationIds:
+              input.outputSchema.properties.citationIds.items.enum.slice(0, 2),
+          };
+        reviewCalls++;
+        const indices = input.context.requirements.map((r: any[]) => r[0]);
+        const leftRange =
+          input.outputSchema.properties.candidates.items.properties.left;
+        const rightRange =
+          input.outputSchema.properties.candidates.items.properties.right;
+        const left = indices.filter(
+          (i: number) => i >= leftRange.minimum && i <= leftRange.maximum,
+        );
+        const right = indices.filter(
+          (i: number) => i >= rightRange.minimum && i <= rightRange.maximum,
+        );
+        const cross = leftRange.maximum < rightRange.minimum;
+        const candidates = cross
+          ? left.flatMap((a: number) =>
+              right.map((b: number) => ({
+                left: a,
+                right: b,
+                kind: "conflict",
+                reason: "Compare.",
+              })),
+            )
+          : indices.flatMap((a: number, i: number) =>
+              indices.slice(i + 1).map((b: number) => ({
+                left: a,
+                right: b,
+                kind: "conflict",
+                reason: "Compare.",
+              })),
+            );
+        if (candidates.length > 200)
+          throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
+        return { summary: "Compared group.", candidates };
+      },
+    };
+    const first = await reviewJointRequirements(requirements, model, {}, store);
+    expect(first.candidateReviews.length).toBeGreaterThan(200);
+    const callsAfterFirstRun = reviewCalls;
+    const replay = await reviewJointRequirements(requirements, model, {}, store);
+    expect(reviewCalls).toBe(callsAfterFirstRun);
+    expect(replay.candidateReviews).toHaveLength((26 * 25) / 2);
+    expect(replay.candidateReviews).toEqual(first.candidateReviews);
+  });
+
+  it("terminates when a minimal cross-scope pair truncates", async () => {
+    let reviewCalls = 0;
+    await expect(
+      reviewJointRequirements(
+        [req("First", "doc-a"), req("Second", "doc-b")],
+        {
+          id: "minimal-pair-review-model",
+          generate: async (input: any) => {
+            reviewCalls++;
+            if (input.context.requirements.length === 1)
+              return { summary: "Single requirement.", candidates: [] };
+            throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
+          },
+        },
+        {},
+        cache(),
+      ),
+    ).rejects.toMatchObject({ code: "MODEL_OUTPUT_TRUNCATED" });
+    expect(reviewCalls).toBe(3);
   });
 
   it("rejects a single requirement that cannot fit without truncating its wording", async () => {

@@ -136,6 +136,15 @@ before resume; results are merged in original plan and candidate order so
 completion timing cannot change candidate selection, conflicts, or amendments.
 Verification retains the existing both-side citation and amendment rules.
 
+When a joint review response truncates, within-block groups divide into left,
+right and cross comparisons; cross-block groups divide one scope at a time. This
+preserves every planned pair, including pairs spanning distant split boundaries.
+The split marker is cached before child reviews begin, and successful leaves are
+cached separately, so a resumed job does not repeat a truncated parent call.
+Recursive child work is sequential inside each of the existing eight workers.
+Split aggregates may exceed one response's candidate and summary limits, so only
+bounded leaf responses are schema-validated and cached as model output.
+
 Uncached group inference narrows the response schema's candidate indices to its
 original source-block ranges. Cross-block groups use disjoint left/right ranges;
 diagonal groups retain within-block comparisons. This prevents cross-block
