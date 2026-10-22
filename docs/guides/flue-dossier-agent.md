@@ -186,7 +186,7 @@ review still consumes the full extracted requirement set.
 
 The joint comparison plan runs at most eight independent calls concurrently by
 default. `MODEL_JOINT_REVIEW_CONCURRENCY` can raise this to at most 64; production
-uses 32 for higher throughput. At the observed model latency this remains
+uses 64 for higher throughput. At the observed model latency this remains
 below Workers AI's documented 300 requests per minute default; the account-wide
 rate limit still applies. Candidate evidence verification remains capped at
 eight concurrent calls. Changing review concurrency does not change the planned
