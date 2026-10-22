@@ -93,6 +93,14 @@ type CompactRequirement = [
 function invalidOutput(): DossierError {
   return new DossierError("MODEL_INVALID_OUTPUT", 502, true);
 }
+function candidateCapExceeded(error: z.ZodError) {
+  return error.issues.some(
+    (issue) =>
+      issue.code === "too_big" &&
+      issue.path.length === 1 &&
+      issue.path[0] === "candidates",
+  );
+}
 function logInvalidGroupSchema(groupIndex: number, error: z.ZodError) {
   console.error(
     JSON.stringify({
@@ -321,7 +329,7 @@ function makeGroups(
     };
   const blocks: number[][] = [];
   let block: number[] = [];
-  const blockLimit = Math.floor(REQUEST_LIMIT / 2) - 1_000;
+  const blockLimit = 27_000;
   for (let itemIndex = 0; itemIndex < requirements.length; itemIndex++) {
     const next = [...block, itemIndex];
     const sample = reviewInput(
@@ -547,6 +555,13 @@ export async function reviewJointRequirements(
         return reviewChildren(children);
       }
       const result = reviewSchema.parse(cached);
+      if (result.candidates.length === 200) {
+        const children = splitGroup(group, scopesForGroup(group));
+        if (!children.length)
+          throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
+        await cache.put(key, { split: true });
+        return reviewChildren(children);
+      }
       for (const candidate of result.candidates) {
         if (
           candidate.left === candidate.right ||
@@ -574,6 +589,8 @@ export async function reviewJointRequirements(
       try {
         result = reviewSchema.parse(raw);
       } catch (error) {
+        if (error instanceof z.ZodError && candidateCapExceeded(error))
+          throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
         if (error instanceof z.ZodError)
           logInvalidGroupSchema(groupLogIndex(group), error);
         throw invalidOutput();
@@ -586,6 +603,13 @@ export async function reviewJointRequirements(
         throw error;
       const children = splitGroup(group, scopes);
       if (!children.length) throw error;
+      await cache.put(key, { split: true });
+      return reviewChildren(children);
+    }
+    if (result.candidates.length === 200) {
+      const children = splitGroup(group, scopes);
+      if (!children.length)
+        throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
       await cache.put(key, { split: true });
       return reviewChildren(children);
     }
