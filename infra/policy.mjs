@@ -149,6 +149,17 @@ export function vectorActions(m, index, metadata) {
     return existing ? [] : [name];
   });
 }
+function desiredWorkflowSubrequests(m) {
+  const value = m.limits?.subrequests;
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || value < 1 || value > 10_000_000)
+    throw new Error("Invalid Workflow subrequest limit");
+  return value;
+}
+export function workflowSubrequestLimitUpdate(m, settings) {
+  const expected = desiredWorkflowSubrequests(m);
+  return expected !== undefined && settings.limits?.subrequests !== expected;
+}
 export function assertOcr(m, settings, subdomain, app) {
   if (subdomain.enabled || subdomain.previews_enabled)
     throw new Error("OCR must not be public");
@@ -182,6 +193,12 @@ export function workerMetadata(m, settings) {
     compatibility_date: m.compatibilityDate,
     compatibility_flags: m.compatibilityFlags,
   };
+  const subrequestLimit = desiredWorkflowSubrequests(m);
+  if (settings.limits !== undefined || subrequestLimit !== undefined) {
+    metadata.limits = { ...(settings.limits ?? {}) };
+    if (subrequestLimit !== undefined)
+      metadata.limits.subrequests = subrequestLimit;
+  }
   if (m.agent) {
     const delay = m.agent.codeUpdateMaxDelaySeconds ?? 30;
     if (!Number.isInteger(delay) || delay < 1 || delay > 300)
@@ -206,7 +223,6 @@ export function workerMetadata(m, settings) {
     "tail_consumers",
     "logpush",
     "observability",
-    "limits",
     "placement",
   ]) {
     if (settings[key] !== undefined) metadata[key] = settings[key];

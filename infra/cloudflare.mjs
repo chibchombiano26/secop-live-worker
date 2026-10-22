@@ -6,6 +6,7 @@ import {
   assertOcr,
   vectorActions,
   assertPrivateBucket,
+  workflowSubrequestLimitUpdate,
 } from "./policy.mjs";
 
 export async function credentials(env = process.env) {
@@ -126,6 +127,10 @@ export async function inspect(
         JSON.stringify([...m.compatibilityFlags].sort()))
   )
     throw new Error("Worker compatibility configuration drift detected");
+  const workflowSubrequestLimitUpdateDetected =
+    workflowSubrequestLimitUpdate(m, settings);
+  if (verifyValues && workflowSubrequestLimitUpdateDetected)
+    throw new Error("Workflow subrequest limit drift detected");
   for (const v of Object.values(m.kv))
     if (!kv.some((k) => k.id === v.id && k.title === v.title))
       throw new Error("KV identity mismatch");
@@ -177,6 +182,7 @@ export async function inspect(
     schedules,
     subdomain,
     metadataToCreate,
+    workflowSubrequestLimitUpdate: workflowSubrequestLimitUpdateDetected,
     consumerUpdate,
     scheduleUpdate,
     bucketManagedDomain,

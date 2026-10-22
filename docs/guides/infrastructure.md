@@ -68,6 +68,11 @@ The production owner model budget is 25,000 calls per UTC day, configured by
 `MODEL_DAILY_LIMIT` in `infra/production.json`. Each resumable segment remains
 limited to 256 calls. Raising the daily allowance preserves the current day's
 recorded consumption; never reset or delete `model-daily` accounting rows.
+A large synthesis can make more than 10,000 D1 and model subrequests in one
+Workflow instance. The protected `limits.subrequests` value in
+`infra/production.json` sets the paid Workflow ceiling to 50,000; deployment
+preserves `cpu_ms` and other existing Worker limits, and `infra:check` detects
+subrequest-limit drift. Cloudflare's Workflow maximum is 10 million.
 A job already waiting for the next budget window keeps its saved resume time.
 An authorized early continuation must retain its checkpoints and attempt count,
 set both `available_at` and `progress.resumeAt` to the new resume time, and clear

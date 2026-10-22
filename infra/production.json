@@ -1,6 +1,9 @@
 {
   "accountId": "08a0d36f8b0357684f83e4bfeb6628b6",
   "worker": "secop-live-worker",
+  "limits": {
+    "subrequests": 50000
+  },
   "url": "https://secop-live-worker.jose-douglas-dev.workers.dev",
   "compatibilityDate": "2026-10-01",
   "compatibilityFlags": ["global_fetch_strictly_public", "nodejs_compat"],
