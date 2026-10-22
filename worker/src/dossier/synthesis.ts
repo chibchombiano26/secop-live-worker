@@ -196,12 +196,14 @@ export async function extractRequirements(
     } catch (error) {
       if (
         !(error instanceof DossierError) ||
-        error.code !== "MODEL_OUTPUT_TRUNCATED" ||
+        (error.code !== "MODEL_OUTPUT_TRUNCATED" &&
+          error.code !== "INVALID_CITATION") ||
         chunk.text.length <= 500
       )
         throw error;
-      // Save the partition decision before its children, so an interrupted job does
-      // not repeatedly pay for the same oversized inference. Children cache normally.
+      // Save the partition decision before its children, so an interrupted job
+      // does not repeatedly pay for the same oversized or invalid parent output.
+      // Children cache normally.
       await cache?.put(key, { splitFragment: 1 });
       return splitFragment(chunk);
     }
