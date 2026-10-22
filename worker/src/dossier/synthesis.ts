@@ -169,14 +169,16 @@ export async function extractRequirements(
   }
   async function splitFragment(chunk: EvidenceChunk): Promise<Part[]> {
     const middle = Math.floor(chunk.text.length / 2);
-    // Overlap preserves conditions that cross the split; source metadata is unchanged.
+    const overlap = Math.min(100, Math.floor(chunk.text.length / 4));
+    // Bounded overlap preserves conditions that cross the split while ensuring
+    // both children are strictly smaller than every parent above the minimum.
     const leftChunk = {
       ...chunk,
-      text: chunk.text.slice(0, middle + 100),
+      text: chunk.text.slice(0, middle + overlap),
     };
     const rightChunk = {
       ...chunk,
-      text: chunk.text.slice(middle - 100),
+      text: chunk.text.slice(middle - overlap),
     };
     const leftKey = await sha256(`${model.id}:${JSON.stringify(leftChunk)}`);
     const left = await extractFragment(leftChunk, leftKey);
@@ -198,7 +200,7 @@ export async function extractRequirements(
         !(error instanceof DossierError) ||
         (error.code !== "MODEL_OUTPUT_TRUNCATED" &&
           error.code !== "INVALID_CITATION") ||
-        chunk.text.length <= 500
+        chunk.text.length <= 200
       )
         throw error;
       // Save the partition decision before its children, so an interrupted job

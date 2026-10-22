@@ -31,6 +31,77 @@ const part = (chunk: EvidenceChunk) => ({
 });
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 describe("bounded complete dossier extraction", () => {
+  it("splits a truncated 250-character fragment into smaller grounded pieces and replays them", async () => {
+    const source = { ...chunks[0], page: 73, text: "0123456789".repeat(25) };
+    const cached = new Map<string, unknown>();
+    const cache = {
+      get: async (key: string) => cached.get(key) ?? null,
+      put: async (key: string, value: unknown) => {
+        cached.set(key, value);
+      },
+    };
+    const visited: EvidenceChunk[] = [];
+    const model = {
+      id: "test",
+      generate: async (input: any) => {
+        const chunk = input.evidence[0] as EvidenceChunk;
+        visited.push(chunk);
+        if (chunk.text.length === 250)
+          throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true, {
+            provider: "Workers AI",
+            phase: "output_truncated",
+            elapsedMs: 20,
+            finishReason: "length",
+            shape: { contentType: "workers_ai" },
+          });
+        return part(chunk);
+      },
+    };
+
+    const result = await extractRequirements([source], model, cache);
+    expect(visited.map((chunk) => chunk.text.length)).toEqual([250, 187, 187]);
+    expect(visited[0].text).toBe(source.text);
+    expect(visited[1].text + visited[2].text.slice(124)).toBe(source.text);
+    expect(result.requirements).toHaveLength(2);
+    expect(
+      result.requirements.every(
+        (requirement) =>
+          requirement.citations[0].page === 73 &&
+          source.text.includes(requirement.citations[0].excerpt),
+      ),
+    ).toBe(true);
+    visited.length = 0;
+    expect(await extractRequirements([source], model, cache)).toEqual(result);
+    expect(visited).toHaveLength(0);
+  });
+
+  it("does not split at the 200-character minimum when inference truncates", async () => {
+    const source = { ...chunks[0], text: "x".repeat(200) };
+    const cached = new Map<string, unknown>();
+    const cache = {
+      get: async (key: string) => cached.get(key) ?? null,
+      put: async (key: string, value: unknown) => {
+        cached.set(key, value);
+      },
+    };
+    let calls = 0;
+    await expect(
+      extractRequirements(
+        [source],
+        {
+          id: "test",
+          generate: async () => {
+            calls++;
+            throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
+          },
+        },
+        cache,
+      ),
+    ).rejects.toMatchObject({ code: "MODEL_OUTPUT_TRUNCATED" });
+    expect(calls).toBe(1);
+    expect([...cached.values()]).toEqual([]);
+  });
+
   it("splits truncated inference without losing source text or original page citations and caches the split for resume", async () => {
     const source = { ...chunks[0], page: 74, text: "BEGIN " + "dense requirement ".repeat(80) + " END" };
     const values = new Map<string, unknown>();

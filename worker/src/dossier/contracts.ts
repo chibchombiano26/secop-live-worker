@@ -18,7 +18,8 @@ export type ModelInvalidOutputPhase =
   | "missing_content"
   | "content_json"
   | "workers_ai_shape"
-  | "provider_error";
+  | "provider_error"
+  | "output_truncated";
 export type ModelProviderErrorType =
   | "context_length_exceeded"
   | "max_tokens_exceeded"

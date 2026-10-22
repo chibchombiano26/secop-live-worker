@@ -210,10 +210,10 @@ plan or legacy cache keys. Backend validation remains authoritative.
 
 If a model response truncates or still has invalid citations after its correction
 attempt, extraction divides that source fragment into two smaller sections with
-a 200-character overlap. Original version and page metadata remain intact and no
-source text is dropped. The saved partition decision and each completed section
-are reused on resume. Recursive sections run sequentially within their existing
-worker, preserving the configured extraction concurrency. A fragment of 500
+up to a 200-character overlap. Original version and page metadata remain intact
+and no source text is dropped. The saved partition decision and each completed
+section are reused on resume. Recursive sections run sequentially within their
+existing worker, preserving the configured extraction concurrency. A fragment of 200
 characters or less that still truncates or has invalid citations fails
 explicitly; partial or ungrounded model output is never accepted as a complete
 requirements inventory.
