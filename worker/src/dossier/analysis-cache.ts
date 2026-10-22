@@ -24,6 +24,7 @@ export class DossierAnalysisCache {
     if (!requested.length) return;
     const records = await this.repo.readMany<unknown>("report", requested, {
       allowMissing: true,
+      retryNetworkLoss: true,
     });
     for (const id of requested) this.values.set(id, null);
     for (const record of records) this.values.set(record.id, record.value);
@@ -48,7 +49,7 @@ export class DossierAnalysisCache {
   }
 
   async put(id: string, value: unknown) {
-    await this.repo.upsert("report", id, value);
+    await this.repo.writeAnalysisCache(id, value);
     if (this.values.has(id)) this.values.set(id, value);
   }
 
@@ -77,6 +78,7 @@ export class DossierAnalysisCache {
         entries.map(([id]) => id),
         {
           allowMissing: true,
+          retryNetworkLoss: true,
         },
       );
       const found = new Map(

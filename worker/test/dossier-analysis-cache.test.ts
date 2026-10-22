@@ -23,6 +23,17 @@ function repository(ownerId: string) {
   );
 }
 
+function readRepository(all: () => Promise<{ results: unknown[] }>) {
+  const db = {
+    prepare: () => ({ bind: () => ({ all }) }),
+  } as unknown as D1Database;
+  return new DossierRepository(
+    { DOSSIER_DB: db, DOSSIER_FILES: bucket },
+    { ownerId: "cache-read-test", scopes: [...PRIVATE_SCOPES] },
+    () => now,
+  );
+}
+
 beforeAll(async () => {
   mf = new Miniflare(
     convertV4MiniflareOptions({
@@ -45,6 +56,83 @@ afterAll(async () => {
 });
 
 describe("dossier analysis cache", () => {
+  it("retries a recognized transient D1 network loss while loading exact cache keys", async () => {
+    let calls = 0;
+    const repo = readRepository(async () => {
+      calls++;
+      if (calls === 1) throw new Error("D1_ERROR: Network connection lost");
+      return { results: [] };
+    });
+    const cache = new DossierAnalysisCache(repo);
+
+    await cache.preload(["part.missing"]);
+
+    expect(await cache.get("part.missing")).toBeNull();
+    expect(calls).toBe(2);
+  });
+
+  it("does not retry unrelated D1 failures while loading cache keys", async () => {
+    const failure = new Error("D1_ERROR: no such table");
+    let calls = 0;
+    const repo = readRepository(async () => {
+      calls++;
+      throw failure;
+    });
+    const cache = new DossierAnalysisCache(repo);
+
+    await expect(cache.preload(["part.missing"])).rejects.toBe(failure);
+
+    expect(calls).toBe(1);
+  });
+
+  it("retries an ambiguous cache write without incrementing the record twice", async () => {
+    const repo = repository("cache-write-retry-owner");
+    const database = repo.db;
+    let calls = 0;
+    const flakyDatabase = new Proxy(database, {
+      get(target, property) {
+        if (property === "prepare")
+          return (query: string) => {
+            const statement = target.prepare(query);
+            if (!query.startsWith("INSERT INTO dossier_records"))
+              return statement;
+            return {
+              bind: (...values: unknown[]) => {
+                const bound = statement.bind(...values);
+                return {
+                  run: async () => {
+                    calls++;
+                    const result = await bound.run();
+                    if (calls === 1)
+                      throw new Error("D1_ERROR: Network connection lost");
+                    return result;
+                  },
+                };
+              },
+            };
+          };
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as D1Database;
+    const retryRepo = new DossierRepository(
+      { DOSSIER_DB: flakyDatabase, DOSSIER_FILES: bucket },
+      repo.context,
+      () => now,
+    );
+    const cache = new DossierAnalysisCache(retryRepo);
+
+    await cache.put("part.ambiguous-write", { requirements: ["saved"] });
+
+    const record = await repo.read<{ requirements: string[] }>(
+      "report",
+      "part.ambiguous-write",
+    );
+    expect(calls).toBe(2);
+    expect(record.revision).toBe(1);
+    expect(record.value).toEqual({ requirements: ["saved"] });
+  });
+
   it("synthesizes and replays with more than 5,000 unrelated owner cache rows", async () => {
     const repo = repository("cache-owner");
     const dossierId = "CO1.REQ.11219655";
