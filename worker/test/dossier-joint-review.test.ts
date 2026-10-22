@@ -1049,4 +1049,61 @@ describe("reviewJointRequirements", () => {
     ).rejects.toMatchObject({ code: "MODEL_CONTEXT_LIMIT" });
     expect(called).toBe(false);
   });
+
+  it("bounds source tables per group and replays every pair from cache", async () => {
+    const requirements = Array.from({ length: 32 }, (_, requirementIndex) => ({
+      ...req(`Requirement ${requirementIndex}`, `unused-${requirementIndex}`),
+      citations: Array.from({ length: 20 }, (_, citationIndex) => ({
+        documentVersionId: `doc-${requirementIndex}-${citationIndex}-${"x".repeat(180)}`,
+        page: citationIndex + 1,
+        excerpt: `Evidence ${requirementIndex}-${citationIndex}`,
+      })),
+    }));
+    const store = cache();
+    let reviewCalls = 0;
+    let maxInputChars = 0;
+    const offeredPairs = new Set<string>();
+    const model = {
+      id: "group-local-source-model",
+      generate: async (input: any) => {
+        reviewCalls++;
+        const inputChars = JSON.stringify(input).length;
+        maxInputChars = Math.max(maxInputChars, inputChars);
+        expect(inputChars).toBeLessThanOrEqual(48_000);
+        const { documents, sources, requirements: rows } = input.context;
+        expect(documents.length).toBeLessThan(32 * 20);
+        expect(sources.length).toBeLessThan(32 * 20);
+        for (const row of rows) {
+          for (const sourceIndex of row[7]) {
+            expect(sourceIndex).toBeGreaterThanOrEqual(0);
+            expect(sourceIndex).toBeLessThan(sources.length);
+            const source = sources[sourceIndex];
+            expect(documents[source[0]]).toContain(`doc-${row[0]}-`);
+          }
+        }
+        for (const source of sources) {
+          expect(source[0]).toBeGreaterThanOrEqual(0);
+          expect(source[0]).toBeLessThan(documents.length);
+        }
+        for (const [offset, left] of rows.entries())
+          for (const right of rows.slice(offset + 1))
+            offeredPairs.add(`${left[0]}:${right[0]}`);
+        return { summary: "Compared group.", candidates: [] };
+      },
+    };
+    const first = await reviewJointRequirements(requirements, model, {}, store);
+    expect(first.metrics.comparedPairs).toBe((32 * 31) / 2);
+    expect(first.metrics.reviewRequests).toBeGreaterThan(1);
+    expect(maxInputChars).toBeLessThanOrEqual(48_000);
+    expect(offeredPairs.size).toBe((32 * 31) / 2);
+    const callsAfterFirstRun = reviewCalls;
+    const replay = await reviewJointRequirements(
+      requirements,
+      model,
+      {},
+      store,
+    );
+    expect(reviewCalls).toBe(callsAfterFirstRun);
+    expect(replay.metrics.comparedPairs).toBe((32 * 31) / 2);
+  });
 });

@@ -12,6 +12,7 @@ export async function processingStepResult(execute: () => Promise<void>) {
       code: error.code,
       status: error.status,
       retryable: error.retryable,
+      ...(error.diagnostic ? { diagnostic: error.diagnostic } : {}),
     };
   }
 }
@@ -106,6 +107,15 @@ export async function runClaimedJob(
     }
     if (failure.code === "MODEL_BUDGET_EXCEEDED") {
       await repo.yieldJob(job.id, job.lease!, 1000, "continuing");
+      // Resume promptly; the saved outbox still recovers a failed queue send.
+      try {
+        await repo.env.DOSSIER_QUEUE?.send(
+          { ownerId: repo.context.ownerId, jobId: job.id },
+          { delaySeconds: 1 },
+        );
+      } catch {
+        /* The saved job remains dispatchable. */
+      }
       return;
     }
     if (failure.code === "OWNER_DAILY_LIMIT") {

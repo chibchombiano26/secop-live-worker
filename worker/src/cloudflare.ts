@@ -55,6 +55,7 @@ export class SecopDossierWorkflow extends WorkflowEntrypoint<
             failure.code,
             failure.status,
             failure.retryable,
+            failure.diagnostic,
           );
         return;
       }

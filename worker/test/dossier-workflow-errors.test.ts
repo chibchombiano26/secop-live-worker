@@ -19,6 +19,29 @@ describe("Workflow processing error transport", () => {
       });
     },
   );
+  it("serializes only the typed safe model diagnostic across the Workflow boundary", async () => {
+    const diagnostic = {
+      provider: "DeepInfra" as const,
+      phase: "content_json" as const,
+      elapsedMs: 812,
+      shape: { contentType: "application/json" as const, length: 44 },
+      finishReason: "error" as const,
+      providerErrorCode: 502,
+    };
+    const result = await processingStepResult(async () => {
+      throw new DossierError("MODEL_INVALID_OUTPUT", 502, true, diagnostic);
+    });
+    const serialized = JSON.stringify(result);
+    expect(JSON.parse(serialized)).toEqual({
+      code: "MODEL_INVALID_OUTPUT",
+      status: 502,
+      retryable: true,
+      diagnostic,
+    });
+    expect(serialized).not.toContain("private");
+    expect(serialized).not.toContain("document");
+    expect(serialized).not.toContain("owner");
+  });
   it("returns a serializable success and does not expose unknown failures", async () => {
     expect(await processingStepResult(async () => {})).toBeNull();
     await expect(
