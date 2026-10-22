@@ -1,5 +1,6 @@
 import { DossierError } from "./contracts";
 import type { DossierRepository } from "./repository";
+import { readManyBatched } from "./read-many";
 import type { EvidenceChunk } from "./extraction";
 import type { Requirement } from "./synthesis";
 import { requirementSchema, validateCitations } from "./synthesis";
@@ -215,7 +216,8 @@ export async function buildExhaustiveChecklist(
       ...(descriptionId ? [descriptionId] : []),
     ]),
   ];
-  const storedDocuments = await repo.readMany<Record<string, unknown>>(
+  const storedDocuments = await readManyBatched<Record<string, unknown>>(
+    repo,
     "document",
     documentIds,
     { allowMissing: true },
@@ -261,7 +263,8 @@ export async function buildExhaustiveChecklist(
 
   let storedRequirements;
   try {
-    storedRequirements = await repo.readMany<Record<string, unknown>>(
+    storedRequirements = await readManyBatched<Record<string, unknown>>(
+      repo,
       "requirement",
       requirementIds,
     );
