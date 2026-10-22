@@ -37,6 +37,124 @@ describe("configured model boundaries", () => {
       response_format: { type: "json_schema", json_schema: schema },
     });
   });
+  it("opts into Workers AI while preserving the configured model cache identity", async () => {
+    const schema = {
+      type: "object",
+      properties: { answer: { type: "string" } },
+      required: ["answer"],
+    };
+    const run = vi.fn(async (name: string, body: any) => {
+      expect(name).toBe("@cf/openai/gpt-oss-120b");
+      expect(body.messages[1].content).toContain("Return JSON only.");
+      expect(body.response_format).toEqual({
+        type: "json_schema",
+        json_schema: schema,
+      });
+      return {
+        choices: [
+          { finish_reason: "stop", message: { content: '{"answer":"ok"}' } },
+        ],
+      };
+    });
+    const model = new ConfiguredModel({
+      MODEL_NAME: "openai/gpt-oss-120b",
+      MODEL_TRANSPORT: "workers_ai",
+      AI: { run },
+    });
+
+    expect(model.id).toBe("openai/gpt-oss-120b");
+    await expect(
+      model.generate({ ...input, outputSchema: schema }),
+    ).resolves.toEqual({ answer: "ok" });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+  it("maps the configured expert model to its allowlisted Workers AI route", async () => {
+    const run = vi.fn(async (name: string) => {
+      expect(name).toBe("@cf/openai/gpt-oss-20b");
+      return {
+        choices: [
+          { finish_reason: "stop", message: { content: '{"answer":"ok"}' } },
+        ],
+      };
+    });
+    const model = new ConfiguredModel({
+      MODEL_NAME: "openai/gpt-oss-20b",
+      MODEL_TRANSPORT: "workers_ai",
+      AI: { run },
+    });
+
+    expect(model.id).toBe("openai/gpt-oss-20b");
+    await expect(model.generate(input)).resolves.toEqual({ answer: "ok" });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+  it("keeps supporting the legacy Workers AI response envelope on explicit transport", async () => {
+    const run = vi.fn(async (name: string) => {
+      expect(name).toBe("@cf/openai/gpt-oss-120b");
+      return { response: { answer: "legacy" } };
+    });
+    const model = new ConfiguredModel({
+      MODEL_NAME: "openai/gpt-oss-120b",
+      MODEL_TRANSPORT: "workers_ai",
+      AI: { run },
+    });
+
+    await expect(model.generate(input)).resolves.toEqual({ answer: "legacy" });
+  });
+  it("fails explicit Workers AI transport configuration when the binding is absent", async () => {
+    const consumeBudget = vi.fn(async () => {});
+    const request = vi.spyOn(globalThis, "fetch");
+    try {
+      await expect(
+        new ConfiguredModel(
+          {
+            MODEL_NAME: "openai/gpt-oss-120b",
+            MODEL_TRANSPORT: "workers_ai",
+          },
+          undefined,
+          consumeBudget,
+        ).generate(input),
+      ).rejects.toMatchObject({ code: "MODEL_UNCONFIGURED" });
+      expect(consumeBudget).not.toHaveBeenCalled();
+      expect(request).not.toHaveBeenCalled();
+    } finally {
+      request.mockRestore();
+    }
+  });
+  it("rejects unallowlisted explicit Workers AI models before spending budget", async () => {
+    const run = vi.fn();
+    const consumeBudget = vi.fn(async () => {});
+    await expect(
+      new ConfiguredModel(
+        {
+          MODEL_NAME: "openai/other-model",
+          MODEL_TRANSPORT: "workers_ai",
+          AI: { run },
+        },
+        undefined,
+        consumeBudget,
+      ).generate(input),
+    ).rejects.toMatchObject({ code: "MODEL_UNCONFIGURED" });
+    expect(consumeBudget).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+  it("keeps the Workers AI output length signal for recursive splitting", async () => {
+    const run = vi.fn(async () => ({
+      choices: [
+        { finish_reason: "length", message: { content: "private partial" } },
+      ],
+    }));
+    const failure = await new ConfiguredModel({
+      MODEL_NAME: "openai/gpt-oss-120b",
+      MODEL_TRANSPORT: "workers_ai",
+      AI: { run },
+    })
+      .generate(input)
+      .catch((error) => error);
+
+    expect(failure).toMatchObject({ code: "MODEL_OUTPUT_TRUNCATED" });
+    expect(JSON.stringify(failure)).not.toContain("private partial");
+    expect(run).toHaveBeenCalledTimes(1);
+  });
   it("retries transient Workers AI failures within the physical attempt budget", async () => {
     let attempts = 0;
     const run = vi.fn(async () => {

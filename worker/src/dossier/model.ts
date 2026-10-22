@@ -19,6 +19,7 @@ export interface ModelProvider {
   generate(input: ModelInput): Promise<unknown>;
 }
 export type ModelEnv = {
+  MODEL_TRANSPORT?: string;
   MODEL_URL?: string;
   MODEL_NAME?: string;
   MODEL_KEY?: string;
@@ -45,6 +46,12 @@ type ConfiguredModelOptions = {
 const MAX_PHYSICAL_ATTEMPTS = 3;
 const DEFAULT_REQUEST_TIMEOUT_MS = 90000;
 const DEFAULT_RETRY_DELAY_MS = 250;
+const explicitWorkersAIModels = new Map([
+  ["openai/gpt-oss-120b", "@cf/openai/gpt-oss-120b"],
+  ["openai/gpt-oss-20b", "@cf/openai/gpt-oss-20b"],
+  ["@cf/openai/gpt-oss-120b", "@cf/openai/gpt-oss-120b"],
+  ["@cf/openai/gpt-oss-20b", "@cf/openai/gpt-oss-20b"],
+]);
 function modelUnavailable() {
   return new DossierError("MODEL_UNAVAILABLE", 502, true);
 }
@@ -316,9 +323,26 @@ export class ConfiguredModel implements ModelProvider {
       maxPrice = { prompt: promptPrice, completion: completionPrice };
     }
 
+    if (
+      this.env.MODEL_TRANSPORT !== undefined &&
+      this.env.MODEL_TRANSPORT !== "workers_ai"
+    )
+      throw new DossierError("MODEL_TRANSPORT_INVALID", 503);
+    const useWorkersAI =
+      this.env.MODEL_TRANSPORT === "workers_ai" ||
+      (Boolean(this.env.AI) && this.id.startsWith("@cf/"));
+    if (useWorkersAI && !this.env.AI)
+      throw new DossierError("MODEL_UNCONFIGURED", 503);
+    const workersAiModel =
+      this.env.MODEL_TRANSPORT === "workers_ai"
+        ? explicitWorkersAIModels.get(this.id)
+        : this.id.startsWith("@cf/")
+          ? this.id
+          : undefined;
+    if (useWorkersAI && !workersAiModel)
+      throw new DossierError("MODEL_UNCONFIGURED", 503);
     let provider: ModelProviderLabel = "unknown";
-    const useWorkersAI = Boolean(this.env.AI && this.id.startsWith("@cf/"));
-    provider = useWorkersAI ? "Workers AI" : "unknown";
+    if (useWorkersAI) provider = "Workers AI";
     let url: URL | undefined;
     let openrouter = false;
     let key: string | undefined;
@@ -397,8 +421,8 @@ export class ConfiguredModel implements ModelProvider {
 
       try {
         if (useWorkersAI) {
-          result = await this.env.AI!.run(
-            this.id,
+          const aiResult = await this.env.AI!.run(
+            workersAiModel!,
             {
               messages: [
                 {
@@ -419,13 +443,47 @@ export class ConfiguredModel implements ModelProvider {
               ),
             },
           );
-          const raw = (result as { response?: unknown })?.response;
+          const raw = (aiResult as { response?: unknown })?.response;
           if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
             result = raw;
             structuredResult = true;
           } else if (typeof raw === "string") {
             contentType = "workers_ai";
             result = raw;
+          } else if (
+            aiResult !== null &&
+            typeof aiResult === "object" &&
+            Array.isArray((aiResult as { choices?: unknown }).choices)
+          ) {
+            contentType = "workers_ai";
+            const envelope = aiResult as {
+              choices: Array<{
+                finish_reason?: unknown;
+                message?: { content?: unknown };
+              }>;
+            };
+            const choice = envelope.choices[0];
+            finishReason = safeFinishReason(choice?.finish_reason);
+            if (finishReason === "length")
+              throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
+            const content = choice?.message?.content;
+            const contentLength =
+              typeof content === "string" ? content.length : undefined;
+            if (finishReason === "error")
+              throw providerError("MODEL_UNAVAILABLE", true, contentLength);
+            if (finishReason === "content_filter")
+              throw providerError("MODEL_PROVIDER_ERROR", false, contentLength);
+            if (typeof content === "string") result = content;
+            else if (
+              content !== null &&
+              typeof content === "object" &&
+              !Array.isArray(content)
+            ) {
+              result = content;
+              structuredResult = true;
+            } else {
+              throw invalidOutput("workers_ai_shape");
+            }
           } else {
             contentType = "workers_ai";
             throw invalidOutput("workers_ai_shape");
