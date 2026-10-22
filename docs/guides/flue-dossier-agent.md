@@ -184,10 +184,15 @@ cache entries persist before the job yields; the next attempt reuses them. This
 does not increase the configured per-job or owner daily model budget. The joint
 review still consumes the full extracted requirement set.
 
-The joint comparison plan and, after that phase has fully settled, candidate
-evidence verification each execute at most eight independent calls concurrently.
-The plan retains every planned requirement pair, and verification retains every
-candidate. Completed group and verification results are cached before progress is
+The joint comparison plan runs at most eight independent calls concurrently by
+default. `MODEL_JOINT_REVIEW_CONCURRENCY` can raise this to at most 64; production
+can use 32 for higher throughput. At the observed model latency this remains
+below Workers AI's documented 300 requests per minute default; the account-wide
+rate limit still applies. Candidate evidence verification remains capped at
+eight concurrent calls. Changing review concurrency does not change the planned
+requirement pairs, candidates, cache keys, or result ordering. The plan retains
+every planned requirement pair, and verification retains every candidate.
+Completed group and verification results are cached before progress is
 acknowledged. On failure, no more work is scheduled and all in-flight work settles
 before resume; results are merged in original plan and candidate order so
 completion timing cannot change candidate selection, conflicts, or amendments.

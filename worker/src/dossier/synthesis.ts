@@ -7,7 +7,10 @@ import type { ModelProvider } from "./model";
 import { sha256 } from "./downloads";
 import { DossierAnalysisCache } from "./analysis-cache";
 import { reviewJointRequirements } from "./joint-review";
-import { modelExtractionConcurrency } from "./model-concurrency";
+import {
+  modelExtractionConcurrency,
+  modelJointReviewConcurrency,
+} from "./model-concurrency";
 export const citationSchema = z.object({
   documentVersionId: z.string().min(1).max(200),
   page: z.number().int().positive().optional(),
@@ -368,7 +371,10 @@ export async function synthesizeDossier(
   revision: number,
   model: ModelProvider,
   checkpoint?: (progress: Record<string, unknown>) => Promise<void>,
-  options?: { extractionConcurrency?: number },
+  options?: {
+    extractionConcurrency?: number;
+    jointReviewConcurrency?: number;
+  },
 ) {
   const { dossier, chunks } = await dossierEvidence(repo, dossierId);
   if (dossier.value.corpusRevision !== revision)
@@ -461,6 +467,11 @@ export async function synthesizeDossier(
           }
         }
       : undefined,
+    {
+      concurrency: modelJointReviewConcurrency(
+        options?.jointReviewConcurrency,
+      ),
+    },
   );
   const overviews = joint.summaries;
   const conflicts = [...parts.conflicts, ...joint.conflicts];

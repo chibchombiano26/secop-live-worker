@@ -3,7 +3,10 @@ import {
   validateCitations,
   extractRequirements,
 } from "../src/dossier/synthesis";
-import { modelExtractionConcurrency } from "../src/dossier/model-concurrency";
+import {
+  modelExtractionConcurrency,
+  modelJointReviewConcurrency,
+} from "../src/dossier/model-concurrency";
 import type { EvidenceChunk } from "../src/dossier/extraction";
 const chunks: EvidenceChunk[] = [
   {
@@ -213,6 +216,15 @@ describe("grounded cross-document synthesis", () => {
     expect(() => modelExtractionConcurrency("fast")).toThrow(
       "MODEL_BUDGET_UNCONFIGURED",
     );
+  });
+  it("validates joint review concurrency with a conservative default and cap", () => {
+    expect(modelJointReviewConcurrency()).toBe(8);
+    expect(modelJointReviewConcurrency("32")).toBe(32);
+    expect(modelJointReviewConcurrency("64")).toBe(64);
+    for (const value of ["0", "65", "fast", "2.5"])
+      expect(() => modelJointReviewConcurrency(value)).toThrow(
+        "MODEL_BUDGET_UNCONFIGURED",
+      );
   });
   it("rejects uncited invented requirements instead of treating model text as evidence", async () => {
     await expect(

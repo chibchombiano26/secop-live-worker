@@ -1,6 +1,7 @@
 import { z } from "zod/v4";
 import { DossierError } from "./contracts";
 import { sha256 } from "./downloads";
+import { modelJointReviewConcurrency } from "./model-concurrency";
 import type { ModelProvider } from "./model";
 import type { Citation, Requirement } from "./synthesis";
 
@@ -413,7 +414,9 @@ export async function reviewJointRequirements(
   coverage: unknown,
   cache: Cache,
   checkpoint?: (progress: Record<string, unknown>) => Promise<void>,
+  options?: { concurrency?: number },
 ): Promise<JointReviewResult> {
+  const reviewConcurrency = modelJointReviewConcurrency(options?.concurrency);
   const index = sourceIndex(requirements);
   const plan = makeGroups(requirements, index, coverage);
   const summaries = new Set<string>();
@@ -509,7 +512,7 @@ export async function reviewJointRequirements(
     const candidates: Candidate[] = [];
     const summaries: string[] = [];
     // Keep recursive work sequential within each worker. The outer plan
-    // already runs at most eight workers concurrently.
+    // bounds total concurrent review requests.
     for (const child of children) {
       const result = await reviewOne(child);
       if (result.summary.trim()) summaries.push(result.summary.trim());
@@ -656,7 +659,10 @@ export async function reviewJointRequirements(
   // Settle all in-flight model/cache work before yielding, then merge in the
   // original plan order so completion timing cannot select different candidates.
   await Promise.all(
-    Array.from({ length: Math.min(8, plan.groups.length) }, visitGroups),
+    Array.from(
+      { length: Math.min(reviewConcurrency, plan.groups.length) },
+      visitGroups,
+    ),
   );
   if (failed) throw failure;
   for (let groupIndex = 0; groupIndex < plan.groups.length; groupIndex++) {
