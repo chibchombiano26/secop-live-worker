@@ -74,7 +74,7 @@
     }
   },
   "variables": {
-    "AI_PROVIDER_LABEL": "OpenRouter",
+    "AI_PROVIDER_LABEL": "Cloudflare Workers AI and OpenRouter",
     "CACHE_TTL": "600",
     "MODEL_DAILY_LIMIT": "10000",
     "MODEL_EXTRACTION_CONCURRENCY": "16",
@@ -84,6 +84,7 @@
     "MODEL_MAX_CALLS": "256",
     "MODEL_MAX_INPUT_CHARS": "50000",
     "MODEL_NAME": "openai/gpt-oss-120b",
+    "MODEL_TRANSPORT": "workers_ai",
     "MODEL_URL": "https://openrouter.ai/api/v1/chat/completions",
     "AGENT_MODEL_NAME": "openai/gpt-oss-20b"
   },
