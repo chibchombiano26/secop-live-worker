@@ -44,6 +44,7 @@ export const requirementSchema = z.object({
   citations: z.array(citationSchema).min(1).max(20),
 });
 export type Requirement = z.infer<typeof requirementSchema> & { id?: string };
+const REQUIREMENT_WRITE_BATCH_SIZE = 100;
 const partSchema = z.object({
   requirements: z.array(requirementSchema).max(100),
   summary: z.string().max(12000),
@@ -479,7 +480,15 @@ export async function synthesizeDossier(
       },
     });
   }
-  await repo.upsertMany("requirement", requirementRecords);
+  for (
+    let offset = 0;
+    offset < requirementRecords.length;
+    offset += REQUIREMENT_WRITE_BATCH_SIZE
+  )
+    await repo.upsertMany(
+      "requirement",
+      requirementRecords.slice(offset, offset + REQUIREMENT_WRITE_BATCH_SIZE),
+    );
   const report = {
     dossierId,
     corpusRevision: revision,
