@@ -14,7 +14,7 @@
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^1.2.3",
     "@flue/runtime": "2.3.0",
-    "@modelcontextprotocol/server": "^2.0.0",
+    "@modelcontextprotocol/server": "2.3.1",
     "fflate": "^0.8.3",
     "hono": "4.13.13",
     "pdfjs-dist": "6.4.299",
@@ -24,6 +24,7 @@
     "@cloudflare/vite-plugin": "1.64.0",
     "@cloudflare/workers-types": "^5.0.0",
     "@flue/vite": "2.3.0",
+    "@modelcontextprotocol/client": "2.3.1",
     "@types/node": "^26.6.5",
     "esbuild": "^0.28.2",
     "miniflare": "^5.20261006.1-alpha",
@@ -34,6 +35,7 @@
   },
   "overrides": {
     "@modelcontextprotocol/client": "2.3.1",
+    "@modelcontextprotocol/server": "2.3.1",
     "@modelcontextprotocol/sdk": "1.32.1"
   }
 }

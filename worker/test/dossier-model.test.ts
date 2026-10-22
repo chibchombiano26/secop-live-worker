@@ -294,6 +294,288 @@ describe("OpenRouter structured responses", () => {
   });
 });
 
+describe("OpenRouter embedded provider errors", () => {
+  const env = {
+    MODEL_NAME: "openai/gpt-oss-20b",
+    MODEL_URL: "https://openrouter.ai/api/v1/chat/completions",
+    OPENROUTER_API_KEY: "private-fixture",
+    MODEL_MAX_PRICE_PROMPT: "0.15",
+    MODEL_MAX_PRICE_COMPLETION: "0.75",
+  };
+
+  it("discards partial choice content, then ignores only the failed provider on retry", async () => {
+    const schema = {
+      type: "object",
+      properties: { answer: { type: "string" } },
+      required: ["answer"],
+      additionalProperties: false,
+    };
+    let attempts = 0;
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (_url, options) => {
+        attempts++;
+        const body = JSON.parse(String(options?.body));
+        expect(body.model).toBe(env.MODEL_NAME);
+        expect(body.response_format.json_schema.schema).toEqual(schema);
+        expect(body.provider.sort).toBe("price");
+        expect(body.provider.data_collection).toBe("deny");
+        expect(body.provider.require_parameters).toBe(true);
+        expect(body.provider.max_price).toEqual({ prompt: 0.15, completion: 0.75 });
+        if (attempts === 1) {
+          expect(body.provider.ignore).toBeUndefined();
+          return Response.json({
+            provider: "Groq",
+            choices: [
+              {
+                finish_reason: "error",
+                error: {
+                  code: 502,
+                  message: "private provider error text",
+                  metadata: {
+                    error_type: "provider_overloaded",
+                    provider_name: "Groq",
+                  },
+                },
+                message: { content: '{"answer":"must not be accepted"}' },
+              },
+            ],
+          });
+        }
+        expect(body.provider.ignore).toEqual(["groq"]);
+        return Response.json({
+          choices: [
+            { finish_reason: "stop", message: { content: '{"answer":"ok"}' } },
+          ],
+        });
+      },
+    );
+    try {
+      const model = new ConfiguredModel(env, undefined, undefined, {
+        retryDelayMs: 0,
+        sleep: async () => {},
+      });
+      expect(await model.generate({ ...input, outputSchema: schema })).toEqual({
+        answer: "ok",
+      });
+      expect(request).toHaveBeenCalledTimes(2);
+    } finally {
+      request.mockRestore();
+    }
+  });
+
+  it.each([
+    [401, "authentication"],
+    [402, "payment_required"],
+    [403, "permission_denied"],
+    [400, "invalid_request"],
+    [400, "content_policy_violation"],
+  ])("does not retry embedded HTTP %i %s errors", async (code, errorType) => {
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({
+        provider: "Groq",
+        error: {
+          code,
+          message: "private provider error text",
+          metadata: { error_type: errorType },
+        },
+        choices: [
+          {
+            finish_reason: "error",
+            message: { content: '{"answer":"partial private content"}' },
+          },
+        ],
+      }),
+    );
+    try {
+      const failure = await new ConfiguredModel(env, undefined, undefined, {
+        retryDelayMs: 0,
+        sleep: async () => {},
+      })
+        .generate(input)
+        .catch((error) => error);
+      expect(failure).toMatchObject({
+        code: "MODEL_PROVIDER_ERROR",
+        retryable: false,
+        diagnostic: {
+          phase: "provider_error",
+          provider: "Groq",
+          providerErrorCode: code,
+          errorType,
+        },
+      });
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(failure)).not.toContain("private provider error text");
+      expect(JSON.stringify(failure)).not.toContain("partial private content");
+    } finally {
+      request.mockRestore();
+    }
+  });
+
+  it("does not retry refusal errors without a numeric provider code", async () => {
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        provider: "Groq",
+        choices: [
+          {
+            finish_reason: "error",
+            error: {
+              message: "private refusal detail",
+              metadata: { error_type: "refusal", provider_name: "Groq" },
+            },
+            message: { content: "private partial" },
+          },
+        ],
+      }),
+    );
+    try {
+      const failure = await new ConfiguredModel(env)
+        .generate(input)
+        .catch((error) => error);
+      expect(failure).toMatchObject({
+        code: "MODEL_PROVIDER_ERROR",
+        retryable: false,
+        diagnostic: {
+          phase: "provider_error",
+          errorType: "refusal",
+        },
+      });
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(failure)).not.toContain("private refusal detail");
+      expect(JSON.stringify(failure)).not.toContain("private partial");
+    } finally {
+      request.mockRestore();
+    }
+  });
+
+  it("classifies a root-level 502 with partial content as transient and keeps only safe diagnostics", async () => {
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({
+        provider: "Groq",
+        error: {
+          code: 502,
+          message: "private root error text",
+          metadata: { error_type: "server" },
+        },
+        choices: [
+          {
+            finish_reason: "error",
+            message: { content: '{"answer":"partial private content"}' },
+          },
+        ],
+      }),
+    );
+    const consumeBudget = vi.fn(async () => {});
+    try {
+      const failure = await new ConfiguredModel(
+        env,
+        undefined,
+        consumeBudget,
+        { retryDelayMs: 0, sleep: async () => {} },
+      )
+        .generate(input)
+        .catch((error) => error);
+      expect(failure).toMatchObject({
+        code: "MODEL_PROVIDER_HTTP_502",
+        retryable: true,
+        diagnostic: {
+          provider: "Groq",
+          phase: "provider_error",
+          providerErrorCode: 502,
+          errorType: "server",
+          finishReason: "error",
+          shape: { length: 36 },
+        },
+      });
+      expect(request).toHaveBeenCalledTimes(3);
+      expect(consumeBudget).toHaveBeenCalledTimes(3);
+      expect(JSON.stringify(failure)).not.toContain("private root error text");
+      expect(JSON.stringify(failure)).not.toContain("partial private content");
+    } finally {
+      request.mockRestore();
+    }
+  });
+
+  it("charges each embedded transient attempt and stops at the configured budget", async () => {
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({
+        provider: "Groq",
+        choices: [
+          {
+            finish_reason: "error",
+            error: {
+              code: 503,
+              metadata: {
+                error_type: "provider_unavailable",
+                provider_name: "Groq",
+              },
+            },
+            message: { content: "partial" },
+          },
+        ],
+      }),
+    );
+    const consumeBudget = vi.fn(async () => {});
+    try {
+      const failure = await new ConfiguredModel(
+        { ...env, MODEL_MAX_CALLS: "1" },
+        undefined,
+        consumeBudget,
+        { retryDelayMs: 0, sleep: async () => {} },
+      )
+        .generate(input)
+        .catch((error) => error);
+      expect(failure).toMatchObject({ code: "MODEL_BUDGET_EXCEEDED" });
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(consumeBudget).toHaveBeenCalledTimes(1);
+    } finally {
+      request.mockRestore();
+    }
+  });
+
+  it("maps token-limit provider errors to output truncation for splitting", async () => {
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        error: {
+          code: 400,
+          metadata: { error_type: "token_limit_exceeded" },
+        },
+        choices: [{ finish_reason: "error", message: { content: "partial" } }],
+      }),
+    );
+    try {
+      const failure = await new ConfiguredModel(env)
+        .generate(input)
+        .catch((error) => error);
+      expect(failure).toMatchObject({
+        code: "MODEL_OUTPUT_TRUNCATED",
+        retryable: true,
+      });
+      expect(request).toHaveBeenCalledTimes(1);
+    } finally {
+      request.mockRestore();
+    }
+  });
+
+  it("does not treat an explicit null error field as a provider failure", async () => {
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        error: null,
+        choices: [
+          { finish_reason: "stop", message: { content: '{"answer":"ok"}' } },
+        ],
+      }),
+    );
+    try {
+      expect(await new ConfiguredModel(env).generate(input)).toEqual({
+        answer: "ok",
+      });
+      expect(request).toHaveBeenCalledTimes(1);
+    } finally {
+      request.mockRestore();
+    }
+  });
+});
+
 describe("model response body timeouts", () => {
   it("serializes a stalled response-body timeout as a typed retryable workflow error", async () => {
     const request = vi
@@ -478,7 +760,7 @@ describe("model response body timeouts", () => {
     }
   });
 
-  it("records only allowlisted provider and categorical metadata for missing content", async () => {
+  it("records only safe provider error metadata and does not retry content filters", async () => {
     const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       Response.json({
         provider: "Groq",
@@ -498,23 +780,25 @@ describe("model response body timeouts", () => {
         failure = error;
       }
       expect(failure).toMatchObject({
-        code: "MODEL_INVALID_OUTPUT",
+        code: "MODEL_PROVIDER_ERROR",
+        retryable: false,
         diagnostic: {
           provider: "Groq",
-          phase: "missing_content",
+          phase: "provider_error",
           finishReason: "content_filter",
           providerErrorCode: 502,
         },
       });
       expect(JSON.stringify(failure)).not.toContain("private provider detail");
       expect(JSON.stringify(failure)).not.toContain("private-key");
+      expect(request).toHaveBeenCalledTimes(1);
     } finally {
       request.mockRestore();
     }
   });
 
-  it("classifies malformed content JSON and maps unknown providers safely", async () => {
-    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+  it("rejects partial content from unknown provider errors and maps providers safely", async () => {
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
       Response.json({
         provider: "__proto__",
         choices: [
@@ -537,16 +821,18 @@ describe("model response body timeouts", () => {
         failure = error;
       }
       expect(failure).toMatchObject({
-        code: "MODEL_INVALID_OUTPUT",
+        code: "MODEL_UNAVAILABLE",
+        retryable: true,
         diagnostic: {
           provider: "unknown",
-          phase: "content_json",
+          phase: "provider_error",
           finishReason: "error",
           shape: { contentType: "application/json", length: 18 },
         },
       });
       expect(JSON.stringify(failure)).not.toContain("private model text");
       expect(JSON.stringify(failure)).not.toContain("__proto__");
+      expect(request).toHaveBeenCalledTimes(3);
     } finally {
       request.mockRestore();
     }
