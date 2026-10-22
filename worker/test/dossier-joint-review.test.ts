@@ -1164,6 +1164,86 @@ describe("reviewJointRequirements", () => {
     expect(called).toBe(false);
   });
 
+  it("keeps oversized candidate verification unconfirmed and replays its checkpoint", async () => {
+    const requirements = [
+      req("Requirement A", "doc-a"),
+      req("Requirement B", "doc-b"),
+    ];
+    requirements[0].citations[0].excerpt = "A".repeat(25_000);
+    requirements[1].citations[0].excerpt = "B".repeat(25_000);
+    const store = cache();
+    const checkpoints: unknown[] = [];
+    let reviewCalls = 0;
+    let verificationCalls = 0;
+    const model = {
+      id: "oversized-verification-model",
+      generate: async (input: any) => {
+        if (input.purpose === "joint_requirement_review") {
+          reviewCalls++;
+          return {
+            summary: "Se detectó una relación que requiere verificación.",
+            candidates: [
+              {
+                left: 0,
+                right: 1,
+                kind: "conflict",
+                reason: "Las obligaciones parecen incompatibles.",
+              },
+            ],
+          };
+        }
+        verificationCalls++;
+        return {
+          decision: "conflict",
+          reason: "This must not be returned.",
+          citationIds: input.outputSchema.properties.citationIds.items.enum,
+        };
+      },
+    };
+    const checkpoint = async (value: unknown) => {
+      checkpoints.push(value);
+    };
+
+    const first = await reviewJointRequirements(
+      requirements,
+      model,
+      {},
+      store,
+      checkpoint,
+    );
+
+    expect(first.candidateReviews).toEqual([
+      {
+        left: 0,
+        right: 1,
+        decision: "unconfirmed",
+        reason:
+          "La evidencia citada excede el límite de contexto para verificación; se conserva como no confirmada.",
+        citations: [],
+      },
+    ]);
+    expect(first.metrics.verifiedCandidates).toBe(0);
+    expect(first.metrics.completedVerifications).toBe(1);
+    expect(first.metrics.verificationRequests).toBe(0);
+    expect(verificationCalls).toBe(0);
+    expect(checkpoints).toContainEqual({
+      phase: "joint_verification",
+      candidatesCompleted: 1,
+      candidatesTotal: 1,
+    });
+
+    const replay = await reviewJointRequirements(
+      requirements,
+      model,
+      {},
+      store,
+      checkpoint,
+    );
+    expect(replay.candidateReviews).toEqual(first.candidateReviews);
+    expect(reviewCalls).toBe(1);
+    expect(verificationCalls).toBe(0);
+  });
+
   it("bounds source tables per group and replays every pair from cache", async () => {
     const requirements = Array.from({ length: 32 }, (_, requirementIndex) => ({
       ...req(`Requirement ${requirementIndex}`, `unused-${requirementIndex}`),

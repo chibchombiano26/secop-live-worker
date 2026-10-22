@@ -62,6 +62,11 @@ Each joint-review group includes only its referenced document/source tables,
 with local source indices and unchanged global requirement indices. This keeps
 large source catalogs within the request bound without dropping compared pairs.
 Review cache version 3 separates these payloads from previous global tables.
+If a proposed candidate's original quoted evidence still exceeds the model
+context bound, the candidate is saved as unconfirmed with a deterministic
+reason, counted as completed, and checkpointed. The worker does not shorten or
+omit the evidence to force a confirmation; the cached result is reused on
+resume.
 Final requirements are saved in sequential batches of at most 100 records,
 retaining deterministic IDs and every requirement in the published report.
 This permits large dossiers without raising repository batch or byte limits;
