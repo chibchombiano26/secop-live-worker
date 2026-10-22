@@ -64,9 +64,9 @@ OCR once. Ordinary deployments reuse Docker's layer cache too.
 
 ## State and concurrency
 
-The production owner model budget is 10,000 calls per UTC day, configured by
+The production owner model budget is 25,000 calls per UTC day, configured by
 `MODEL_DAILY_LIMIT` in `infra/production.json`. Each resumable segment remains
-limited to 64 calls. Raising the daily allowance preserves the current day's
+limited to 256 calls. Raising the daily allowance preserves the current day's
 recorded consumption; never reset or delete `model-daily` accounting rows.
 A job already waiting for the next budget window keeps its saved resume time.
 An authorized early continuation must retain its checkpoints and attempt count,
