@@ -116,6 +116,7 @@ try {
   if (command === "check") {
     if (
       before.metadataToCreate.length ||
+      before.workflowSubrequestLimitUpdate ||
       before.consumerUpdate ||
       before.scheduleUpdate
     )
@@ -166,6 +167,7 @@ try {
       storageChanges: 0,
       workerVariablesToUpdate: desiredVariableChanges(before.settings.bindings),
       metadataToCreate: before.metadataToCreate,
+      workflowSubrequestLimitUpdate: before.workflowSubrequestLimitUpdate,
       consumerUpdate: before.consumerUpdate,
       scheduleUpdate: before.scheduleUpdate,
     };
@@ -305,6 +307,7 @@ try {
         const after = await inspect(manifest, api, { verifyValues: true });
         if (
           after.metadataToCreate.length ||
+          after.workflowSubrequestLimitUpdate ||
           after.consumerUpdate ||
           after.scheduleUpdate
         )

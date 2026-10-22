@@ -7,6 +7,7 @@ import {
   assertBindings,
   vectorActions,
   assertOcr,
+  workflowSubrequestLimitUpdate,
   workerMetadata,
 } from "../policy.mjs";
 
@@ -170,9 +171,38 @@ test("worker upload keeps secret values and operational metadata out of applicat
     metadata.bindings.some((b) => b.type === "secret_text"),
     false,
   );
-  assert.deepEqual(metadata.limits, settings.limits);
+  assert.deepEqual(metadata.limits, { ...settings.limits, subrequests: 50000 });
   assert.deepEqual(metadata.observability, settings.observability);
   assert.deepEqual(metadata.tags, settings.tags);
+});
+
+test("worker uploads set the protected Workflow subrequest cap and preserve other limits", () => {
+  const settings = {
+    bindings: [],
+    limits: { cpu_ms: 300000, another_limit: 123 },
+  };
+  const metadata = workerMetadata(manifest, settings);
+  assert.deepEqual(metadata.limits, {
+    cpu_ms: 300000,
+    another_limit: 123,
+    subrequests: 50000,
+  });
+  assert.deepEqual(workerMetadata(manifest, {}).limits, { subrequests: 50000 });
+  assert.equal(workflowSubrequestLimitUpdate(manifest, settings), true);
+  assert.equal(
+    workflowSubrequestLimitUpdate(manifest, {
+      limits: { cpu_ms: 300000, subrequests: 50000 },
+    }),
+    false,
+  );
+  assert.throws(
+    () =>
+      workerMetadata(
+        { ...manifest, limits: { subrequests: 10000001 } },
+        settings,
+      ),
+    /subrequest limit/,
+  );
 });
 
 test("local OCR configuration cannot expose URLs or introduce a new Durable Object migration", async () => {
