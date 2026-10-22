@@ -56,6 +56,10 @@ joint-review and split-fragment cache reads are batched on demand. Unrelated
 historical cache entries cannot exhaust a global preload limit. Cache misses
 recompute the requested analysis, while storage and integrity failures remain
 visible instead of silently discarding evidence.
+Final requirements are saved in sequential batches of at most 100 records,
+retaining deterministic IDs and every requirement in the published report.
+This permits large dossiers without raising repository batch or byte limits;
+an interrupted write can replay safely before report publication.
 
 ## Build and deployment
 
