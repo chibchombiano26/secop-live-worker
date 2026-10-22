@@ -122,7 +122,7 @@ its document-evidence association. Pending OCR and unavailable source warnings
 remain visible, including when copying answers.
 
 Planning and evidence inference share per-segment call and owner daily budgets.
-The configured model limits are 64 calls per job and 1,500 calls per owner per
+The production model limits are 64 calls per resumable segment and 10,000 calls per owner per
 day; concurrency does not increase either budget.
 Actual Flue envelope inference is additionally limited to eight calls per saved
 job/day; tool inspection has an eight-call limit too. Receipt-backed retries do
