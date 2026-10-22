@@ -45,6 +45,59 @@ afterAll(async () => {
   await mf?.dispose();
 });
 describe("persisted owner scoped dossiers and jobs", () => {
+  it("retries a transient D1 network loss while checkpointing a job", async () => {
+    let runs = 0;
+    const db = {
+      prepare: () => ({
+        bind: () => ({
+          run: async () => {
+            runs++;
+            if (runs === 1)
+              throw new Error("D1_ERROR: Network connection lost");
+            return { meta: { changes: 1 } };
+          },
+        }),
+      }),
+    } as unknown as D1Database;
+    const repo = new DossierRepository(
+      { DOSSIER_DB: db, DOSSIER_FILES: env.DOSSIER_FILES },
+      a.context,
+      () => now,
+    );
+
+    await repo.checkpointJob("job-transient", "lease-transient", {
+      stage: "extracting_requirements",
+      fragmentsVisited: 80,
+    });
+
+    expect(runs).toBe(2);
+  });
+
+  it("does not retry or mask lease loss during checkpointing", async () => {
+    let runs = 0;
+    const db = {
+      prepare: () => ({
+        bind: () => ({
+          run: async () => {
+            runs++;
+            return { meta: { changes: 0 } };
+          },
+        }),
+      }),
+    } as unknown as D1Database;
+    const repo = new DossierRepository(
+      { DOSSIER_DB: db, DOSSIER_FILES: env.DOSSIER_FILES },
+      a.context,
+      () => now,
+    );
+
+    await expect(
+      repo.checkpointJob("job-lost", "stale-lease", { stage: "reviewing" }),
+    ).rejects.toMatchObject({ code: "LEASE_LOST" });
+
+    expect(runs).toBe(1);
+  });
+
   it("dispatches newly persisted jobs promptly while retaining failed sends for recovery", async () => {
     const send = vi
       .fn()

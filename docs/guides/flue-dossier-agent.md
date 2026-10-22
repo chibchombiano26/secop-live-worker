@@ -188,6 +188,11 @@ On failure or a model budget boundary, in-flight work settles and valid partial
 cache entries persist before the job yields; the next attempt reuses them. This
 does not increase the configured per-job or owner daily model budget. The joint
 review still consumes the full extracted requirement set.
+D1 `Network connection lost` errors during synthesis cache reads/writes and job
+progress checkpoints receive at most three attempts with short bounded backoff.
+Cache writes are value-idempotent, so retrying after an ambiguous successful
+write does not increment its record revision again. Lease mismatches and other
+D1 failures propagate without retry.
 
 The joint comparison plan runs at most eight independent calls concurrently by
 default. `MODEL_JOINT_REVIEW_CONCURRENCY` can raise this to at most 64; production

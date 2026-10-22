@@ -1,4 +1,5 @@
 import { DossierError, type PrivateContext } from "./contracts";
+import { retryTransientD1 } from "./d1-retry";
 import { sha256 } from "./downloads";
 export type DossierEnv = {
   DOSSIER_DB?: D1Database;
@@ -256,7 +257,7 @@ export class DossierRepository {
   async readMany<T>(
     kind: EntityKind,
     ids: string[],
-    options: { allowMissing?: boolean } = {},
+    options: { allowMissing?: boolean; retryNetworkLoss?: boolean } = {},
   ): Promise<Stored<T>[]> {
     if (
       ids.length > MAX_READ_MANY_IDS ||
@@ -278,17 +279,21 @@ export class DossierRepository {
     ) {
       const chunk = requestedIds.slice(offset, offset + READ_MANY_CHUNK_SIZE);
       const placeholders = chunk.map(() => "?").join(",");
-      const rows = await this.db
-        .prepare(
-          `SELECT id,revision,value,updated_at AS updatedAt FROM dossier_records WHERE owner_id=? AND kind=? AND id IN (${placeholders})`,
-        )
-        .bind(this.context.ownerId, kind, ...chunk)
-        .all<{
-          id: string;
-          revision: number;
-          value: string;
-          updatedAt: number;
-        }>();
+      const query = () =>
+        this.db
+          .prepare(
+            `SELECT id,revision,value,updated_at AS updatedAt FROM dossier_records WHERE owner_id=? AND kind=? AND id IN (${placeholders})`,
+          )
+          .bind(this.context.ownerId, kind, ...chunk)
+          .all<{
+            id: string;
+            revision: number;
+            value: string;
+            updatedAt: number;
+          }>();
+      const rows = options.retryNetworkLoss
+        ? await retryTransientD1(query)
+        : await query();
       for (const row of rows.results) {
         size += storedRecordBytes(kind, row.value);
         if (size > MAX_AGGREGATE_BYTES)
@@ -327,6 +332,23 @@ export class DossierRepository {
     return this.readMany(
       "report",
       rows.results.map((row) => row.id),
+    );
+  }
+  async writeAnalysisCache(id: string, value: unknown) {
+    if (
+      typeof id !== "string" ||
+      id.length > 200 ||
+      !/^(part|joint)\..+/u.test(id)
+    )
+      throw new DossierError("INVALID_BATCH", 400);
+    const serialized = await this.serializeRecord("report", value);
+    await retryTransientD1(() =>
+      this.db
+        .prepare(
+          "INSERT INTO dossier_records(owner_id,kind,id,revision,value,updated_at) VALUES(?,'report',?,1,?,?) ON CONFLICT(owner_id,kind,id) DO UPDATE SET value=excluded.value,revision=dossier_records.revision+1,updated_at=excluded.updated_at WHERE dossier_records.value<>excluded.value",
+        )
+        .bind(this.context.ownerId, id, serialized, this.now())
+        .run(),
     );
   }
   async upsertMany<T>(
@@ -744,19 +766,21 @@ export class DossierRepository {
     lease: string,
     progress: Record<string, unknown>,
   ) {
-    const res = await this.db
-      .prepare(
-        "UPDATE dossier_jobs SET progress=?,lease_until=? WHERE owner_id=? AND id=? AND state='running' AND lease=? AND lease_until>?",
-      )
-      .bind(
-        JSON.stringify(progress),
-        this.now() + 120000,
-        this.context.ownerId,
-        id,
-        lease,
-        this.now(),
-      )
-      .run();
+    const res = await retryTransientD1(() =>
+      this.db
+        .prepare(
+          "UPDATE dossier_jobs SET progress=?,lease_until=? WHERE owner_id=? AND id=? AND state='running' AND lease=? AND lease_until>?",
+        )
+        .bind(
+          JSON.stringify(progress),
+          this.now() + 120000,
+          this.context.ownerId,
+          id,
+          lease,
+          this.now(),
+        )
+        .run(),
+    );
     if (res.meta.changes !== 1) throw new DossierError("LEASE_LOST", 409);
   }
   async yieldJob(id: string, lease: string, delayMs: number, stage: string) {
