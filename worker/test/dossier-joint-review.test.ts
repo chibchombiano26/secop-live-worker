@@ -277,12 +277,21 @@ describe("reviewJointRequirements", () => {
     const reviewInputs: any[] = [];
     let active = 0,
       maximum = 0;
+    let expectedGroups = 0;
+    let releaseGroupBarrier: () => void = () => undefined;
+    const allGroupsStarted = new Promise<void>((resolve) => {
+      releaseGroupBarrier = resolve;
+    });
     const model = {
       id: "pair-coverage-model",
       generate: async (input: any) => {
         active++;
         maximum = Math.max(maximum, active);
-        await new Promise((resolve) => setTimeout(resolve, 10));
+        if (active >= expectedGroups) releaseGroupBarrier();
+        await Promise.race([
+          allGroupsStarted,
+          new Promise((resolve) => setTimeout(resolve, 100)),
+        ]);
         active--;
         if (input.purpose === "joint_requirement_review") {
           reviewInputs.push(input);
@@ -303,9 +312,14 @@ describe("reviewJointRequirements", () => {
       model,
       {},
       cache(),
+      async (progress) => {
+        if (progress.reviewGroupsCompleted === 0)
+          expectedGroups = Number(progress.reviewGroupsTotal);
+      },
+      { concurrency: 32 },
     );
     expect(result.metrics.blocks).toBeGreaterThan(1);
-    expect(maximum).toBe(Math.min(8, result.metrics.reviewGroups));
+    expect(maximum).toBe(Math.min(32, result.metrics.reviewGroups));
     expect(result.metrics.requirements).toBe(14);
     expect(observed.size).toBe((14 * 13) / 2);
     expect(observed.has("0:13")).toBe(true);
@@ -715,7 +729,7 @@ describe("reviewJointRequirements", () => {
   });
 
   it("settles in-flight review caches on failure and reuses them on the next attempt", async () => {
-    const requirements = Array.from({ length: 24 }, (_, i) =>
+    const requirements = Array.from({ length: 48 }, (_, i) =>
       req(`Requirement ${i}: ${"complete evidence ".repeat(180)}`, `doc-${i}`),
     );
     const store = cache();
@@ -741,19 +755,28 @@ describe("reviewJointRequirements", () => {
       },
     };
     await expect(
-      reviewJointRequirements(requirements, model, {}, store),
+      reviewJointRequirements(
+        requirements,
+        model,
+        {},
+        store,
+        undefined,
+        { concurrency: 32 },
+      ),
     ).rejects.toThrow("temporary inference failure");
-    expect(calls).toBe(8);
-    expect(store.values.size).toBe(7);
+    expect(calls).toBe(32);
+    expect(store.values.size).toBe(31);
     failing = false;
     const resumed = await reviewJointRequirements(
       requirements,
       model,
       {},
       store,
+      undefined,
+      { concurrency: 32 },
     );
     expect(repeatedGroups).toEqual([]);
-    expect(resumed.metrics.comparedPairs).toBe((24 * 23) / 2);
+    expect(resumed.metrics.comparedPairs).toBe((48 * 47) / 2);
     expect(successfulGroups.size).toBe(resumed.metrics.reviewGroups);
   });
 

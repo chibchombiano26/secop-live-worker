@@ -19,7 +19,10 @@ import {
   type MarkdownBinding,
 } from "./extraction";
 import { ConfiguredModel, type ModelProvider, type ModelEnv } from "./model";
-import { modelExtractionConcurrency } from "./model-concurrency";
+import {
+  modelExtractionConcurrency,
+  modelJointReviewConcurrency,
+} from "./model-concurrency";
 import { synthesizeDossier } from "./synthesis";
 import { assessCompany } from "./assessment";
 import { answerTenderQuestion, type ChatInput } from "./conversations";
@@ -30,6 +33,7 @@ export type ProcessingEnv = PrivateServiceEnv &
   RetrievalEnv & {
     AGENT_MODEL_NAME?: string;
     MODEL_EXTRACTION_CONCURRENCY?: string;
+    MODEL_JOINT_REVIEW_CONCURRENCY?: string;
     SECOP_OCR?: OcrServiceBinding;
     EXTRACTOR_URL?: string;
     EXTRACTOR_KEY?: string;
@@ -207,6 +211,9 @@ export async function executeProcessingJob(
         {
           extractionConcurrency: modelExtractionConcurrency(
             env.MODEL_EXTRACTION_CONCURRENCY,
+          ),
+          jointReviewConcurrency: modelJointReviewConcurrency(
+            env.MODEL_JOINT_REVIEW_CONCURRENCY,
           ),
         },
       );
