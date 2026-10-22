@@ -388,47 +388,138 @@ export async function reviewJointRequirements(
     reviewGroupsCompleted: 0,
     reviewGroupsTotal: plan.groups.length,
   });
-  async function reviewGroup(groupIndex: number) {
-    const group = plan.groups[groupIndex];
+  // Joint output grows with the pairs under review, so a single large
+  // group can exceed one bounded inference even when its input fits.
+  // Truncated groups halve (with boundary overlap so edge pairs are still
+  // compared; duplicates merge by pair key) instead of failing the dossier.
+  const OUTPUT_SPLIT_OVERLAP = 4;
+  async function reviewOne(group: Group): Promise<{
+    summary: string;
+    candidates: Candidate[];
+  }> {
     const input = reviewInput(requirements, group, index, coverage);
     const key = await sha256(
       `joint-review:v1:${model.id}:${JSON.stringify(input)}`,
     );
     const cached = await cache.get(key);
-    let result: z.infer<typeof reviewSchema>;
     if (cached !== null) {
-      result = reviewSchema.parse(cached);
+      const result = reviewSchema.parse(cached);
+      return {
+        summary: group.summaryAllowed ? result.summary : "",
+        candidates: result.candidates,
+      };
+    }
+    // Split halves can sit inside a single plan block, where block
+    // scoping has no far side. Fall back to the half's own range; pair
+    // membership is still validated before merging.
+    let scopes: { left: number[]; right: number[] };
+    if (group.summaryAllowed) {
+      scopes = { left: group.indices, right: group.indices };
     } else {
-      const generatedInput = boundCandidateIndices(
-        input,
-        candidateScopes(group, plan.blocks),
-      );
-      const generatedInputChars = checkRequest(generatedInput);
-      maxSentReviewRequestChars = Math.max(
-        maxSentReviewRequestChars,
-        generatedInputChars,
-      );
+      try {
+        scopes = candidateScopes(group, plan.blocks);
+      } catch (error) {
+        if (!(error instanceof DossierError)) throw error;
+        scopes = { left: group.indices, right: group.indices };
+      }
+    }
+    const generatedInput = boundCandidateIndices(input, scopes);
+    const generatedInputChars = checkRequest(generatedInput);
+    maxSentReviewRequestChars = Math.max(
+      maxSentReviewRequestChars,
+      generatedInputChars,
+    );
+    let result: z.infer<typeof reviewSchema>;
+    try {
       const raw = await model.generate(generatedInput);
       try {
         result = reviewSchema.parse(raw);
       } catch (error) {
         if (error instanceof z.ZodError)
-          logInvalidGroupSchema(groupIndex, error);
+          logInvalidGroupSchema(groupLogIndex(group), error);
         throw invalidOutput();
       }
-      for (const candidate of result.candidates) {
-        if (
-          candidate.left === candidate.right ||
-          !group.indices.includes(candidate.left) ||
-          !group.indices.includes(candidate.right)
-        ) {
-          logInvalidGroupCandidate(groupIndex, candidate, group);
-          throw invalidOutput();
-        }
-      }
-      await cache.put(key, result);
-      reviewRequests++;
+    } catch (error) {
+      if (
+        !(error instanceof DossierError) ||
+        error.code !== "MODEL_OUTPUT_TRUNCATED" ||
+        group.indices.length < 2
+      )
+        throw error;
+      const middle = Math.ceil(group.indices.length / 2);
+      // Keep the overlap small relative to the group so both halves
+      // strictly shrink and the recursion always terminates.
+      const overlap = Math.min(
+        OUTPUT_SPLIT_OVERLAP,
+        Math.floor(group.indices.length / 4),
+      );
+      const left: Group = {
+        indices: group.indices.slice(0, middle + overlap),
+        summaryAllowed: group.summaryAllowed,
+      };
+      const right: Group = {
+        indices: group.indices.slice(middle - overlap),
+        summaryAllowed: false,
+      };
+      if (
+        left.indices.length >= group.indices.length ||
+        right.indices.length >= group.indices.length
+      )
+        throw error;
+      const [first, second] = await Promise.all([
+        reviewOne(left),
+        reviewOne(right),
+      ]);
+      const merged = {
+        summary: [first.summary, second.summary]
+          .map((part) => part.trim())
+          .filter(Boolean)
+          .join("\n"),
+        candidates: [...first.candidates, ...second.candidates],
+      };
+      await cache.put(key, { summary: merged.summary, candidates: merged.candidates });
+      return merged;
     }
+    for (const candidate of result.candidates) {
+      if (
+        candidate.left === candidate.right ||
+        !group.indices.includes(candidate.left) ||
+        !group.indices.includes(candidate.right)
+      ) {
+        logInvalidGroupCandidate(groupLogIndex(group), candidate, group);
+        throw invalidOutput();
+      }
+    }
+    await cache.put(key, result);
+    reviewRequests++;
+    return {
+      summary: group.summaryAllowed ? result.summary : "",
+      candidates: result.candidates,
+    };
+  }
+  function groupLogIndex(group: Group): number {
+    const position = plan.groups.indexOf(group);
+    return position === -1 ? 0 : position;
+  }
+  async function reviewGroup(groupIndex: number) {
+    const group = plan.groups[groupIndex];
+    const merged = await reviewOne(group);
+    for (const candidate of merged.candidates) {
+      if (
+        candidate.left === candidate.right ||
+        !group.indices.includes(candidate.left) ||
+        !group.indices.includes(candidate.right)
+      ) {
+        logInvalidGroupCandidate(groupIndex, candidate, group);
+        throw invalidOutput();
+      }
+    }
+    // Merged leaves were schema-validated individually; the aggregate keeps
+    // every candidate instead of re-applying the per-inference 200 cap.
+    const result: z.infer<typeof reviewSchema> = {
+      summary: merged.summary,
+      candidates: merged.candidates,
+    };
     results[groupIndex] = result;
     const count = ++completed;
     progressWrites = progressWrites.then(async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { reviewJointRequirements } from "../src/dossier/joint-review";
+import { DossierError } from "../src/dossier/contracts";
 import type { Requirement } from "../src/dossier/synthesis";
 
 const req = (wording: string, documentVersionId: string): Requirement => ({
@@ -754,6 +755,65 @@ describe("reviewJointRequirements", () => {
     expect(repeatedGroups).toEqual([]);
     expect(resumed.metrics.comparedPairs).toBe((24 * 23) / 2);
     expect(successfulGroups.size).toBe(resumed.metrics.reviewGroups);
+  });
+
+  it("splits a truncated joint group and merges both halves", async () => {
+    const requirements = Array.from({ length: 20 }, (_, i) =>
+      req(`Requirement ${i}`, `doc-${i}`),
+    );
+    const store = cache();
+    let truncations = 0;
+    let reviewCalls = 0;
+    const model = {
+      id: "splitting-review-model",
+      generate: async (input: any) => {
+        if (input.purpose === "joint_conflict_verification") {
+          return {
+            decision: "unconfirmed",
+            reason: "Further source verification is required.",
+            citationIds:
+              input.outputSchema.properties.citationIds.items.enum.slice(0, 1),
+          };
+        }
+        reviewCalls++;
+        const indices = input.context.requirements.map((r: any[]) => r[0]);
+        if (indices.length > 6) {
+          truncations++;
+          throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
+        }
+        const pairs = [];
+        for (let a = 0; a + 1 < indices.length; a++)
+          pairs.push({
+            left: indices[a],
+            right: indices[a + 1],
+            kind: "conflict",
+            reason: "Neighbor obligations overlap.",
+          });
+        return {
+          summary: `Compared ${indices.length} requirements.`,
+          candidates: pairs,
+        };
+      },
+    };
+    const result = await reviewJointRequirements(
+      requirements,
+      model,
+      { total: 20, pending: [], reviewRequired: [] },
+      store,
+    );
+    expect(truncations).toBeGreaterThan(0);
+    const pairs = result.candidateReviews.map(({ left, right }) => [left, right]);
+    expect(pairs).toContainEqual([0, 1]);
+    expect(pairs).toContainEqual([18, 19]);
+    expect(result.summaries.length).toBeGreaterThan(0);
+    const reviewCallsAfterFirstRun = reviewCalls;
+    await reviewJointRequirements(
+      requirements,
+      model,
+      { total: 20, pending: [], reviewRequired: [] },
+      store,
+    );
+    expect(reviewCalls).toBe(reviewCallsAfterFirstRun);
   });
 
   it("rejects a single requirement that cannot fit without truncating its wording", async () => {
