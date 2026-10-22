@@ -64,6 +64,17 @@ OCR once. Ordinary deployments reuse Docker's layer cache too.
 
 ## State and concurrency
 
+The production owner model budget is 10,000 calls per UTC day, configured by
+`MODEL_DAILY_LIMIT` in `infra/production.json`. Each resumable segment remains
+limited to 64 calls. Raising the daily allowance preserves the current day's
+recorded consumption; never reset or delete `model-daily` accounting rows.
+A job already waiting for the next budget window keeps its saved resume time.
+An authorized early continuation must retain its checkpoints and attempt count,
+set both `available_at` and `progress.resumeAt` to the new resume time, and clear
+`dispatched_at` only while the job is still queued in `waiting_daily_budget`.
+The changed resume time gives the continuation a new Workflow identity. Verify
+the deployed allowance before waking the job and confirm progress afterward.
+
 `tofu/live/terraform.tfstate` is local, ignored by Git and contains only resource
 metadata, not secret values. Keep it private. Every resource has an explicit
 import block, so a fresh machine/CI runner can reconstruct state without creating
