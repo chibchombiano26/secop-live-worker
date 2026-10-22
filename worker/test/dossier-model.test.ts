@@ -215,6 +215,136 @@ describe("OpenRouter credential boundaries", () => {
 });
 
 describe("provider failure classification", () => {
+  it("keeps only allowlisted metadata from an OpenRouter HTTP error body", async () => {
+    const secret = "private-openrouter-error-body";
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json(
+        {
+          error: {
+            code: 403,
+            message: secret,
+            metadata: {
+              error_type: "permission_denied",
+              provider_name: "Groq",
+              prompt: "private prompt that must not escape",
+            },
+          },
+          arbitrary: "private arbitrary payload",
+        },
+        { status: 403 },
+      ),
+    );
+    try {
+      const failure = await new ConfiguredModel({
+        MODEL_NAME: "test",
+        MODEL_URL: "https://openrouter.ai/api/v1/chat/completions",
+        OPENROUTER_API_KEY: "private-key",
+      })
+        .generate(input)
+        .catch((error) => error);
+
+      expect(failure).toMatchObject({
+        code: "MODEL_PROVIDER_HTTP_403",
+        retryable: false,
+        diagnostic: {
+          provider: "Groq",
+          phase: "provider_error",
+          providerErrorCode: 403,
+          errorType: "permission_denied",
+        },
+      });
+      expect(request).toHaveBeenCalledTimes(1);
+      const serialized = JSON.stringify(failure);
+      for (const privateValue of [
+        secret,
+        "private prompt that must not escape",
+        "private arbitrary payload",
+        "private-key",
+      ])
+        expect(serialized).not.toContain(privateValue);
+    } finally {
+      request.mockRestore();
+    }
+  });
+
+  it("does not expose arbitrary non-JSON OpenRouter HTTP error bodies", async () => {
+    const secret = "private body text: prompt, account, and provider details";
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(secret, {
+        status: 403,
+        headers: { "content-type": "text/plain" },
+      }),
+    );
+    try {
+      const failure = await new ConfiguredModel({
+        MODEL_NAME: "test",
+        MODEL_URL: "https://openrouter.ai/api/v1/chat/completions",
+        OPENROUTER_API_KEY: "private-key",
+      })
+        .generate(input)
+        .catch((error) => error);
+
+      expect(failure).toMatchObject({
+        code: "MODEL_PROVIDER_HTTP_403",
+        retryable: false,
+        diagnostic: {
+          provider: "OpenRouter",
+          phase: "provider_error",
+          shape: { contentType: "text/plain" },
+        },
+      });
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(failure)).not.toContain(secret);
+      expect(JSON.stringify(failure)).not.toContain("private-key");
+    } finally {
+      request.mockRestore();
+    }
+  });
+
+  it("bounds OpenRouter HTTP error body reads", async () => {
+    let bodyCancelled = false;
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array(9000).fill(0x78));
+          },
+          cancel() {
+            bodyCancelled = true;
+          },
+        }),
+        {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    try {
+      const failure = await new ConfiguredModel({
+        MODEL_NAME: "test",
+        MODEL_URL: "https://openrouter.ai/api/v1/chat/completions",
+        OPENROUTER_API_KEY: "private-key",
+      })
+        .generate(input)
+        .catch((error) => error);
+
+      expect(failure).toMatchObject({
+        code: "MODEL_PROVIDER_HTTP_403",
+        retryable: false,
+        diagnostic: {
+          provider: "OpenRouter",
+          phase: "provider_error",
+        },
+      });
+      expect(failure.diagnostic.providerErrorCode).toBeUndefined();
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(bodyCancelled).toBe(true);
+      expect(JSON.stringify(failure)).not.toContain("x".repeat(200));
+    } finally {
+      request.mockRestore();
+    }
+  });
+
   it.each([
     [401, false],
     [402, false],
@@ -222,18 +352,12 @@ describe("provider failure classification", () => {
     [500, true],
     [503, true],
   ])(
-    "retains HTTP %i, cancels unused bodies, and avoids logging response content",
+    "retains HTTP %i and avoids logging response content",
     async (status, retryable) => {
-      let cancelledBodies = 0;
       const request = vi.spyOn(globalThis, "fetch").mockImplementation(
         async () =>
-          new Response(
-            new ReadableStream({
-              cancel: () => {
-                cancelledBodies++;
-                return Promise.reject(new Error("private body cancellation"));
-              },
-            }),
+          Response.json(
+            { error: { code: status, message: "private provider response" } },
             { status },
           ),
       );
@@ -249,13 +373,16 @@ describe("provider failure classification", () => {
           consumeBudget,
           { retryDelayMs: 0, sleep: async () => {} },
         );
-        await expect(model.generate(input)).rejects.toMatchObject({
+        const failure = await model.generate(input).catch((error) => error);
+        expect(failure).toMatchObject({
           code: `MODEL_PROVIDER_HTTP_${status}`,
           retryable,
         });
         expect(request).toHaveBeenCalledTimes(retryable ? 3 : 1);
         expect(consumeBudget).toHaveBeenCalledTimes(retryable ? 3 : 1);
-        expect(cancelledBodies).toBe(retryable ? 3 : 1);
+        expect(JSON.stringify(failure)).not.toContain(
+          "private provider response",
+        );
       } finally {
         request.mockRestore();
       }
