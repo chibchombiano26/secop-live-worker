@@ -118,6 +118,39 @@ describe("persisted owner scoped dossiers and jobs", () => {
     }
   });
 
+  it.each([false, true])(
+    "dispatches model continuations promptly and retains the outbox if send fails (%s)",
+    async (sendFails) => {
+      const send = vi.fn();
+      if (sendFails) send.mockRejectedValue(new Error("queue unavailable"));
+      else send.mockResolvedValue(undefined);
+      const job = await a.enqueueJob({
+        kind: "synthesize",
+        targetId: "prompt-continuation",
+        key: `prompt-continuation:${sendFails}`,
+      });
+      await processJob(
+        { ...env, DOSSIER_QUEUE: { send } },
+        { ownerId: "a", jobId: job.id },
+        async () => { throw new DossierError("MODEL_BUDGET_EXCEEDED", 429); },
+      );
+      expect(send).toHaveBeenCalledWith(
+        { ownerId: "a", jobId: job.id },
+        { delaySeconds: 1 },
+      );
+      const saved = await a.readJob(job.id);
+      expect(saved).toMatchObject({
+        state: "queued", attempts: 0, error: null,
+        progress: { stage: "continuing" },
+      });
+      const queued = await env.DOSSIER_DB.prepare(
+        "SELECT available_at,dispatched_at FROM dossier_jobs WHERE owner_id=? AND id=?",
+      ).bind("a", job.id).first();
+      expect(saved.progress.resumeAt).toEqual(queued.available_at);
+      expect(queued.dispatched_at).toBeNull();
+    },
+  );
+
   it.each(["OCR_CONTINUING", "OCR_BUSY"])(
     "yields %s without consuming document failure retries",
     async (code) => {

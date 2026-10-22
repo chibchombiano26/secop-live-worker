@@ -193,19 +193,54 @@ function compactRequirements(
     ] as CompactRequirement;
   });
 }
+function groupSourceIndex(
+  requirements: Requirement[],
+  group: Group,
+  index: ReturnType<typeof sourceIndex>,
+) {
+  const documents: string[] = [];
+  const documentIndexes = new Map<number, number>();
+  const sources: Array<{ document: number; page?: number; section?: string }> =
+    [];
+  const sourceIndexes = new Map<number, number>();
+  const locations = new Map<string, number>();
+  for (const requirementIndex of group.indices)
+    for (const citation of requirements[requirementIndex].citations) {
+      const key = JSON.stringify({
+        documentVersionId: citation.documentVersionId,
+        page: citation.page,
+        section: citation.section,
+      });
+      const globalSource = index.locations.get(key)!;
+      if (!sourceIndexes.has(globalSource)) {
+        const source = index.sources[globalSource];
+        let document = documentIndexes.get(source.document);
+        if (document === undefined) {
+          document = documents.length;
+          documentIndexes.set(source.document, document);
+          documents.push(index.documents[source.document]);
+        }
+        sourceIndexes.set(globalSource, sources.length);
+        sources.push({ ...source, document });
+      }
+      locations.set(key, sourceIndexes.get(globalSource)!);
+    }
+  return { documents, sources, locations };
+}
 function reviewInput(
   requirements: Requirement[],
   group: Group,
   index: ReturnType<typeof sourceIndex>,
   coverage: unknown,
 ) {
+  const groupIndex = groupSourceIndex(requirements, group, index);
   return {
     purpose: "joint_requirement_review",
     evidence: [],
     context: {
       coverage,
-      documents: index.documents,
-      sources: index.sources.map((source) => [
+      documents: groupIndex.documents,
+      sources: groupIndex.sources.map((source) => [
         source.document,
         source.page ?? null,
         source.section ?? null,
@@ -213,7 +248,7 @@ function reviewInput(
       requirements: compactRequirements(
         requirements,
         group.indices,
-        index.locations,
+        groupIndex.locations,
       ),
     },
     instructions:
@@ -489,7 +524,7 @@ export async function reviewJointRequirements(
     const input = reviewInput(requirements, group, index, coverage);
     const scopes = scopesForGroup(group);
     const key = await sha256(
-      `joint-review:v2:${model.id}:${JSON.stringify({
+      `joint-review:v3:${model.id}:${JSON.stringify({
         input,
         scopes,
         summaryAllowed: group.summaryAllowed,

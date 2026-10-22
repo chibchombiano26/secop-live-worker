@@ -22,8 +22,8 @@ through D1 so budget continuations yield without consuming retry attempts.
 Markers are cleared under the active lease on new attempts and intake replay.
 Duplicate study calls reuse the saved
 answer. Tracing is disabled for this integration. Models use OpenRouter with the encrypted
-`OPENROUTER_API_KEY` Worker secret. Grounded analysis routes by price, disallows
-provider data collection and uses low reasoning effort; the initial inexpensive
+`OPENROUTER_API_KEY` Worker secret. Grounded analysis uses the bounded provider
+routing described below, disallows data collection and uses low reasoning effort; the initial inexpensive
 coordinator model is `openai/gpt-oss-20b`; evidence study uses
 `openai/gpt-oss-120b` to reduce confusion between quotations, awarded amounts and
 official budgets. Both use low reasoning effort, and evidence responses request
@@ -41,7 +41,9 @@ steps, retaining their existing D1 checkpoints and model-budget continuations.
 
 D1 leases and idempotency remain authoritative. A stale lease, foreign request or
 wrong company fails closed. The cron outbox recovers queued or expired work;
-budget continuations get a new Workflow identity. The existing queue processor
+budget continuations get a new Workflow identity and request queue delivery after
+one second. A failed send remains recoverable through the persisted cron outbox.
+The existing queue processor
 remains available for local configurations without a Workflow binding.
 
 A fresh dossier prepare/inventory request also retries a failed or cancelled
@@ -56,6 +58,10 @@ joint-review and split-fragment cache reads are batched on demand. Unrelated
 historical cache entries cannot exhaust a global preload limit. Cache misses
 recompute the requested analysis, while storage and integrity failures remain
 visible instead of silently discarding evidence.
+Each joint-review group includes only its referenced document/source tables,
+with local source indices and unchanged global requirement indices. This keeps
+large source catalogs within the request bound without dropping compared pairs.
+Review cache version 3 separates these payloads from previous global tables.
 Final requirements are saved in sequential batches of at most 100 records,
 retaining deterministic IDs and every requirement in the published report.
 This permits large dossiers without raising repository batch or byte limits;
@@ -126,13 +132,20 @@ its document-evidence association. Pending OCR and unavailable source warnings
 remain visible, including when copying answers.
 
 Planning and evidence inference share per-segment call and owner daily budgets.
-The production model limits are 64 calls per resumable segment and 10,000 calls per owner per
-day; concurrency does not increase either budget.
+The production model limits are 256 calls per resumable segment and 10,000 calls per owner per
+day; concurrency does not increase either budget. No new model attempt starts
+after ten minutes in a segment, preserving time for in-flight calls to settle
+before the fifteen-minute Workflow step deadline. Larger segments reduce cached
+replay overhead while keeping saved fragment checkpoints and both budgets.
 Transient network failures, response-body timeouts, HTTP 429 and HTTP 5xx receive
 at most three physical attempts with bounded backoff. Every physical attempt
 consumes both the segment and owner daily budget and refreshes the job lease.
 Invalid output, truncation and authentication errors are not retried by this
 transport layer; source splitting and validation remain authoritative.
+Invalid model output carries bounded diagnostic metadata across Workflow steps:
+the parsing phase, elapsed time, response shape, known provider/finish reason,
+and numeric provider error code when available. Diagnostics contain no prompts,
+source excerpts, response text, credentials, or owner identifiers.
 
 OpenRouter provider sorting defaults to `price`; production uses `throughput`
 for the same configured model. `MODEL_PROVIDER_SORT` also accepts `latency`.

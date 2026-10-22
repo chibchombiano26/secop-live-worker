@@ -444,4 +444,132 @@ describe("model response body timeouts", () => {
       request.mockRestore();
     }
   });
+
+  it("classifies invalid provider envelope JSON without retaining its body", async () => {
+    const response = new Response("private-response-body", {
+      headers: { "content-type": "text/html; secret=hidden" },
+    });
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(response);
+    try {
+      let failure: unknown;
+      try {
+        await new ConfiguredModel({
+          MODEL_NAME: "test",
+          MODEL_URL: "https://openrouter.ai/api/v1/chat/completions",
+          OPENROUTER_API_KEY: "private-key",
+        }).generate(input);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({
+        code: "MODEL_INVALID_OUTPUT",
+        retryable: true,
+        diagnostic: {
+          provider: "OpenRouter",
+          phase: "provider_envelope_json",
+          shape: { contentType: "other", length: 21 },
+        },
+      });
+      expect(JSON.stringify(failure)).not.toContain("private-response-body");
+      expect(JSON.stringify(failure)).not.toContain("private-key");
+      expect(request).toHaveBeenCalledTimes(1);
+    } finally {
+      request.mockRestore();
+    }
+  });
+
+  it("records only allowlisted provider and categorical metadata for missing content", async () => {
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        provider: "Groq",
+        error: { code: 502, message: "private provider detail" },
+        choices: [{ finish_reason: "content_filter", message: {} }],
+      }),
+    );
+    try {
+      let failure: unknown;
+      try {
+        await new ConfiguredModel({
+          MODEL_NAME: "test",
+          MODEL_URL: "https://openrouter.ai/api/v1/chat/completions",
+          OPENROUTER_API_KEY: "private-key",
+        }).generate(input);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({
+        code: "MODEL_INVALID_OUTPUT",
+        diagnostic: {
+          provider: "Groq",
+          phase: "missing_content",
+          finishReason: "content_filter",
+          providerErrorCode: 502,
+        },
+      });
+      expect(JSON.stringify(failure)).not.toContain("private provider detail");
+      expect(JSON.stringify(failure)).not.toContain("private-key");
+    } finally {
+      request.mockRestore();
+    }
+  });
+
+  it("classifies malformed content JSON and maps unknown providers safely", async () => {
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        provider: "__proto__",
+        choices: [
+          {
+            finish_reason: "error",
+            message: { content: "private model text" },
+          },
+        ],
+      }),
+    );
+    try {
+      let failure: unknown;
+      try {
+        await new ConfiguredModel({
+          MODEL_NAME: "test",
+          MODEL_URL: "https://openrouter.ai/api/v1/chat/completions",
+          OPENROUTER_API_KEY: "private-key",
+        }).generate(input);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({
+        code: "MODEL_INVALID_OUTPUT",
+        diagnostic: {
+          provider: "unknown",
+          phase: "content_json",
+          finishReason: "error",
+          shape: { contentType: "application/json", length: 18 },
+        },
+      });
+      expect(JSON.stringify(failure)).not.toContain("private model text");
+      expect(JSON.stringify(failure)).not.toContain("__proto__");
+    } finally {
+      request.mockRestore();
+    }
+  });
+
+  it("classifies malformed Workers AI response shapes", async () => {
+    let failure: unknown;
+    try {
+      await new ConfiguredModel({
+        MODEL_NAME: "@cf/test",
+        AI: { run: async () => ({ response: ["private", "payload"] }) },
+      }).generate(input);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      code: "MODEL_INVALID_OUTPUT",
+      diagnostic: {
+        provider: "Workers AI",
+        phase: "workers_ai_shape",
+        shape: { contentType: "workers_ai" },
+      },
+    });
+    expect(JSON.stringify(failure)).not.toContain("private");
+  });
 });
