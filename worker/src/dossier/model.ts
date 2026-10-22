@@ -1,6 +1,7 @@
 import {
   DossierError,
   type ModelErrorDiagnostic,
+  type ModelHttp403Cause,
   type ModelProviderErrorType,
   type ModelProviderLabel,
 } from "./contracts";
@@ -188,6 +189,38 @@ function numericProviderErrorCode(value: unknown) {
     ? value
     : undefined;
 }
+function openRouter403Cause(
+  payload: any,
+  errorType: ModelProviderErrorType | undefined,
+): ModelHttp403Cause {
+  const error = payload?.error;
+  const metadata = error?.metadata;
+  const limitSource = metadata?.limit_source;
+  if (limitSource === "openrouter_key_limit") return "key_limit";
+  if (limitSource === "openrouter_guardrail_budget") return "guardrail";
+  if (limitSource === "openrouter_workspace_budget") return "budget_limit";
+  if (metadata?.scope === "key_limit") return "key_limit";
+  const pipeline = payload?.openrouter_metadata?.pipeline;
+  if (
+    (Array.isArray(pipeline) &&
+      pipeline.some((stage) => stage?.type === "guardrail")) ||
+    (Array.isArray(metadata?.patterns) && metadata.patterns.length > 0)
+  )
+    return "guardrail";
+  if (
+    errorType === "content_policy_violation" ||
+    errorType === "refusal" ||
+    (Array.isArray(metadata?.reasons) && metadata.reasons.length > 0)
+  )
+    return "provider_policy";
+  const message = error?.message;
+  if (typeof message === "string") {
+    if (/^Request blocked(?::| by content filter\b)/i.test(message))
+      return "guardrail";
+    if (/^Budget limit exceeded\b/i.test(message)) return "budget_limit";
+  }
+  return "unknown";
+}
 async function openRouterHttpErrorDiagnostic(
   response: Response,
   elapsedMs: number,
@@ -219,6 +252,11 @@ async function openRouterHttpErrorDiagnostic(
       choiceError?.metadata?.provider_name;
     const provider = safeProviderLabel(providerName);
     if (provider) diagnostic.provider = provider;
+    if (response.status === 403)
+      diagnostic.http403Cause = openRouter403Cause(
+        payload,
+        diagnostic.errorType,
+      );
   } catch {
     // Keep HTTP status classification even when the bounded error body is
     // absent, oversized, malformed, or unreadable.
