@@ -163,6 +163,10 @@ are excluded from the current model context.
 
 Model calls use `MODEL_NAME` and either Cloudflare AI (`@cf/...`) or a fixed
 HTTPS OpenAI-compatible `MODEL_URL` with secret `MODEL_KEY`. Set
+`MODEL_TRANSPORT=workers_ai` to route the configured `openai/gpt-oss-120b`
+through the existing Cloudflare AI binding while retaining the validated
+per-model synthesis cache. This changes the provider and its billing, not the
+source-citation checks. Set
 `AI_PROVIDER_LABEL` to identify the processor on the consent screen. Defaults
 limit each processing attempt to 64 model calls and 10 minutes, each owner to
 1,000 calls/day, 30 write operations/minute and 240 reads/minute. Raise limits

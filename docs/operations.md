@@ -32,6 +32,10 @@ Do not apply the historical `tofu/` scaffold over the live service.
    per attempt, MODEL_DAILY_LIMIT to 1000 per owner. Long corpora yield between bounded attempts and resume from checkpoints; daily
    model budget exhaustion waits visibly until the next UTC budget window. Validate the actual selected model's context
    window against MODEL_MAX_INPUT_CHARS and the output allowance. The service ceiling is 120000 characters; each deployment may lower it.
+   `MODEL_TRANSPORT=workers_ai` routes the configured `openai/gpt-oss-120b`
+   through the existing Cloudflare AI binding without changing its synthesis
+   cache identity. The OpenRouter URL and secret remain configured for the
+   separate Flue study agent; identify both processors in `AI_PROVIDER_LABEL`.
 5. Provision a separate opaque owner per Savia workspace. Generate high-entropy
    access codes and REST bearer credentials using a cryptographic RNG. Store only
    their HMAC-SHA256 purpose-separated digests in secret PRIVATE_CONNECTIONS and
