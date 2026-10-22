@@ -7,6 +7,7 @@ import type { ModelProvider } from "./model";
 import { sha256 } from "./downloads";
 import { DossierAnalysisCache } from "./analysis-cache";
 import { reviewJointRequirements } from "./joint-review";
+import { modelExtractionConcurrency } from "./model-concurrency";
 export const citationSchema = z.object({
   documentVersionId: z.string().min(1).max(200),
   page: z.number().int().positive().optional(),
@@ -137,8 +138,10 @@ export async function extractRequirements(
     preload?: (keys: string[]) => Promise<void>;
     release?: (keys: string[]) => void;
   },
+  options?: { concurrency?: number },
 ) {
   type Part = z.infer<typeof partSchema>;
+  const concurrency = modelExtractionConcurrency(options?.concurrency);
   const parts: Part[][] = [];
   // Dense pages can produce more output than one bounded inference can finish.
   // Keep original version/page metadata and cover the complete text with overlap.
@@ -291,7 +294,12 @@ export async function extractRequirements(
     // Indexed results retain source order even when inference finishes out of order.
     try {
       await Promise.all(
-        Array.from({ length: Math.min(8, end - start) }, visitFragments),
+        Array.from(
+          {
+            length: Math.min(concurrency, end - start),
+          },
+          visitFragments,
+        ),
       );
     } finally {
       cache?.release?.(keys);
@@ -355,6 +363,7 @@ export async function synthesizeDossier(
   revision: number,
   model: ModelProvider,
   checkpoint?: (progress: Record<string, unknown>) => Promise<void>,
+  options?: { extractionConcurrency?: number },
 ) {
   const { dossier, chunks } = await dossierEvidence(repo, dossierId);
   if (dossier.value.corpusRevision !== revision)
@@ -419,7 +428,7 @@ export async function synthesizeDossier(
     },
     preload: (keys) => analysisCache.preload(keys.map((key) => `part.${key}`)),
     release: (keys) => analysisCache.release(keys.map((key) => `part.${key}`)),
-  });
+  }, { concurrency: options?.extractionConcurrency });
   let previousReviewPhase: unknown;
   const joint = await reviewJointRequirements(
     parts.requirements,

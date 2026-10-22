@@ -124,6 +124,19 @@ remain visible, including when copying answers.
 Planning and evidence inference share per-segment call and owner daily budgets.
 The production model limits are 64 calls per resumable segment and 10,000 calls per owner per
 day; concurrency does not increase either budget.
+Transient network failures, response-body timeouts, HTTP 429 and HTTP 5xx receive
+at most three physical attempts with bounded backoff. Every physical attempt
+consumes both the segment and owner daily budget and refreshes the job lease.
+Invalid output, truncation and authentication errors are not retried by this
+transport layer; source splitting and validation remain authoritative.
+
+OpenRouter provider sorting defaults to `price`; production uses `throughput`
+for the same configured model. `MODEL_PROVIDER_SORT` also accepts `latency`.
+Production caps provider pricing at USD 0.15 per million prompt tokens and
+USD 0.75 per million completion tokens via `MODEL_MAX_PRICE_PROMPT` and
+`MODEL_MAX_PRICE_COMPLETION`. Both optional values must be supplied together
+as positive finite numbers. Routing still requires structured-output support
+and denies provider data collection.
 Actual Flue envelope inference is additionally limited to eight calls per saved
 job/day; tool inspection has an eight-call limit too. Receipt-backed retries do
 not repeat completed effects or paid planning. The authoritative answer remains
@@ -132,8 +145,9 @@ an offer, signs, sends communications or approves company evidence.
 
 ## Complete long-document extraction
 
-Requirement extraction visits every original evidence fragment with at most eight
-independent model calls in flight. Indexed results retain source order, and each
+Requirement extraction visits every original evidence fragment with bounded
+concurrency: eight calls by default and sixteen in production, configured with
+`MODEL_EXTRACTION_CONCURRENCY` (an integer from 1 to 16). Indexed results retain source order, and each
 fragment keeps its exact document version, original page and citation validation.
 On failure or a model budget boundary, in-flight work settles and valid partial
 cache entries persist before the job yields; the next attempt reuses them. This
@@ -168,7 +182,7 @@ If a model response truncates, extraction divides that source fragment into two
 smaller sections with a 200-character overlap. Original version and page metadata
 remain intact and no source text is dropped. The saved partition decision and
 each completed section are reused on resume. Recursive sections run sequentially
-within their existing worker, preserving the eight-call ceiling. A fragment of
+within their existing worker, preserving the configured extraction concurrency. A fragment of
 500 characters or less that still truncates fails explicitly; partial model
 output is never accepted as a complete requirements inventory.
 

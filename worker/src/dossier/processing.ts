@@ -19,6 +19,7 @@ import {
   type MarkdownBinding,
 } from "./extraction";
 import { ConfiguredModel, type ModelProvider, type ModelEnv } from "./model";
+import { modelExtractionConcurrency } from "./model-concurrency";
 import { synthesizeDossier } from "./synthesis";
 import { assessCompany } from "./assessment";
 import { answerTenderQuestion, type ChatInput } from "./conversations";
@@ -28,6 +29,7 @@ export type ProcessingEnv = PrivateServiceEnv &
   ModelEnv &
   RetrievalEnv & {
     AGENT_MODEL_NAME?: string;
+    MODEL_EXTRACTION_CONCURRENCY?: string;
     SECOP_OCR?: OcrServiceBinding;
     EXTRACTOR_URL?: string;
     EXTRACTOR_KEY?: string;
@@ -202,6 +204,11 @@ export async function executeProcessingJob(
         Number(dossier.value.corpusRevision),
         provider,
         checkpoint,
+        {
+          extractionConcurrency: modelExtractionConcurrency(
+            env.MODEL_EXTRACTION_CONCURRENCY,
+          ),
+        },
       );
       await checkpoint({
         stage: "analyzed",
