@@ -10,6 +10,7 @@ import { companyEvidence, type CompanyFact } from "./companies";
 import type { EvidenceChunk } from "./extraction";
 import type { ModelProvider } from "./model";
 import { sha256 } from "./downloads";
+import { readManyBatched } from "./read-many";
 export const findingSchema = z.object({
   status: z.enum([
     "meets",
@@ -133,7 +134,8 @@ export async function assessCompany(
   ]);
   const companyRevision = company.company.revision,
     corpusRevision = report.value.corpusRevision;
-  const allRequirements = await repo.readMany<Requirement>(
+  const allRequirements = await readManyBatched<Requirement>(
+    repo,
     "requirement",
     report.value.requirementIds,
   );
@@ -353,7 +355,8 @@ export async function readAssessment(repo: DossierRepository, id: string) {
   );
   const requirements = new Map(
     (
-      await repo.readMany<Requirement>(
+      await readManyBatched<Requirement>(
+        repo,
         "requirement",
         stored.value.findings.map((f) => f.requirementId),
       )

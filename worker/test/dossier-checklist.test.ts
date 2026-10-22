@@ -234,7 +234,7 @@ describe("exhaustive checklist repository loading", () => {
     };
   }
 
-  it("loads 213 requirements and the complete document inventory in four scoped queries", async () => {
+  it("loads 213 requirements and the complete document inventory in bounded scoped queries", async () => {
     const counted = countedRepository();
     const chunk = {
       documentVersionId: documentIds[0],
@@ -263,8 +263,8 @@ describe("exhaustive checklist repository loading", () => {
     expect(checklist.sources[0].reference).toBe("S001");
     expect(
       counted.queries().filter((sql) => sql.includes("id IN (")).length,
-    ).toBe(4);
-    expect(counted.queries()).toHaveLength(5);
+    ).toBe(6);
+    expect(counted.queries()).toHaveLength(7);
   });
 
   it("rejects duplicate report IDs before reading any database rows", async () => {
