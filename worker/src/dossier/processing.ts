@@ -37,6 +37,7 @@ export async function enqueueSynthesisWhenReady(
   repo: DossierRepository,
   dossierId: string,
   finishingJobId?: string,
+  resumeTerminalSynthesis = false,
 ) {
   const dossier = await repo.readDossier(dossierId);
   const ids = (dossier.value.documentIds ?? []) as string[];
@@ -55,6 +56,7 @@ export async function enqueueSynthesisWhenReady(
     kind: "synthesize",
     targetId: dossierId,
     key: `synthesis:${dossierId}:${dossier.value.corpusRevision}`,
+    resumeTerminalSynthesis,
   });
 }
 async function enqueueAfterExtraction(
@@ -130,7 +132,7 @@ export async function executeProcessingJob(
         detail: (id) => getProcessDetail(env, id),
         checkpoint: () => checkpoint({ stage: "discovering" }),
       });
-      await enqueueSynthesisWhenReady(repo, job.targetId);
+      await enqueueSynthesisWhenReady(repo, job.targetId, undefined, true);
       await checkpoint({
         dossierId: job.targetId,
         stage: "inventory_complete",

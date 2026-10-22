@@ -342,6 +342,125 @@ describe("persisted dossier, assessment and chat workflow", () => {
     });
   });
 
+  it.each(["failed", "cancelled"] as const)(
+    "requeues a %s synthesis job when a fresh inventory request finds the same corpus ready",
+    async (terminalState) => {
+      const id = `CO1.REQ.SYNTHESIS-${terminalState.toUpperCase()}`;
+      await repo.save(
+        "dossier",
+        id,
+        { processId: id, corpusRevision: 1, documentIds: [] },
+        0,
+      );
+      const original = await enqueueSynthesisWhenReady(repo, id);
+      expect(original).toMatchObject({ kind: "synthesize", state: "queued" });
+      await repo.db
+        .prepare(
+          "UPDATE dossier_jobs SET state=?,attempts=3,available_at=?,dispatched_at=?,error='SYNTHESIS_FAILED',progress=? WHERE owner_id=? AND id=?",
+        )
+        .bind(
+          terminalState,
+          now + 60_000,
+          now,
+          JSON.stringify({ stage: "failed", resumeAt: now - 1 }),
+          repo.context.ownerId,
+          original!.id,
+        )
+        .run();
+
+      const resumed = await enqueueSynthesisWhenReady(repo, id, undefined, true);
+      const dispatchState = await repo.db
+        .prepare(
+          "SELECT available_at AS availableAt,dispatched_at AS dispatchedAt FROM dossier_jobs WHERE owner_id=? AND id=?",
+        )
+        .bind(repo.context.ownerId, original!.id)
+        .first<{ availableAt: number; dispatchedAt: number | null }>();
+
+      expect(resumed).toMatchObject({
+        id: original!.id,
+        kind: "synthesize",
+        state: "queued",
+        attempts: 0,
+        error: null,
+        progress: { stage: "queued", resumeAt: now },
+      });
+      expect(dispatchState).toEqual({ availableAt: now, dispatchedAt: null });
+    },
+  );
+
+  it.each(["queued", "running", "succeeded"] as const)(
+    "leaves a %s synthesis job unchanged on a fresh inventory request",
+    async (state) => {
+      const id = `CO1.REQ.SYNTHESIS-KEEP-${state.toUpperCase()}`;
+      await repo.save(
+        "dossier",
+        id,
+        { processId: id, corpusRevision: 1, documentIds: [] },
+        0,
+      );
+      const original = await enqueueSynthesisWhenReady(repo, id);
+      const patch =
+        state === "running"
+          ? { state, attempts: 1, lease: "lease-token", lease_until: now + 60_000 }
+          : state === "succeeded"
+            ? { state, attempts: 1, lease: null, lease_until: null }
+            : { state, attempts: 2, lease: null, lease_until: null };
+      await repo.db
+        .prepare(
+          "UPDATE dossier_jobs SET state=?,attempts=?,lease=?,lease_until=?,available_at=?,dispatched_at=?,progress=? WHERE owner_id=? AND id=?",
+        )
+        .bind(
+          patch.state,
+          patch.attempts,
+          patch.lease,
+          patch.lease_until,
+          now + 30_000,
+          now,
+          JSON.stringify({ stage: "preserve", resumeAt: now - 1 }),
+          repo.context.ownerId,
+          original!.id,
+        )
+        .run();
+
+      const before = await repo.readJob(original!.id);
+      const beforeDispatchState = await repo.db
+        .prepare(
+          "SELECT available_at AS availableAt,dispatched_at AS dispatchedAt FROM dossier_jobs WHERE owner_id=? AND id=?",
+        )
+        .bind(repo.context.ownerId, original!.id)
+        .first();
+      const after = await enqueueSynthesisWhenReady(repo, id);
+      const afterDispatchState = await repo.db
+        .prepare(
+          "SELECT available_at AS availableAt,dispatched_at AS dispatchedAt FROM dossier_jobs WHERE owner_id=? AND id=?",
+        )
+        .bind(repo.context.ownerId, original!.id)
+        .first();
+
+      expect(after).toEqual(before);
+      expect(afterDispatchState).toEqual(beforeDispatchState);
+    },
+  );
+
+  it("does not revive a cancelled synthesis job during ordinary extraction completion", async () => {
+    const id = "CO1.REQ.SYNTHESIS-CANCEL-EXTRACTION";
+    await repo.save(
+      "dossier",
+      id,
+      { processId: id, corpusRevision: 1, documentIds: [] },
+      0,
+    );
+    const original = await enqueueSynthesisWhenReady(repo, id);
+    await repo.db
+      .prepare("UPDATE dossier_jobs SET state='cancelled' WHERE owner_id=? AND id=?")
+      .bind(repo.context.ownerId, original!.id)
+      .run();
+
+    const after = await enqueueSynthesisWhenReady(repo, id, "finished-extract-job");
+
+    expect(after).toMatchObject({ id: original!.id, state: "cancelled" });
+  });
+
   it("extracts cited company figures as reviewable candidates instead of automatically verified facts", async () => {
     const company = await saveCompanyProfile(
       repo,

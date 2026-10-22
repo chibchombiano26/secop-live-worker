@@ -69,6 +69,33 @@ describe("persisted owner scoped dossiers and jobs", () => {
     });
     expect(send).toHaveBeenCalledTimes(2);
   });
+  it("dispatches a resumed terminal synthesis using its existing job id", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const immediate = new DossierRepository(
+      { ...env, DOSSIER_QUEUE: { send } },
+      a.context,
+      () => now,
+    );
+    const original = await a.enqueueJob({
+      kind: "synthesize",
+      targetId: "resume-synthesis",
+      key: "resume-synthesis:1",
+    });
+    await env.DOSSIER_DB
+      .prepare("UPDATE dossier_jobs SET state='failed',error='FAILED' WHERE owner_id=? AND id=?")
+      .bind("a", original.id)
+      .run();
+
+    const resumed = await immediate.enqueueJob({
+      kind: "synthesize",
+      targetId: "resume-synthesis",
+      key: "resume-synthesis:1",
+      resumeTerminalSynthesis: true,
+    });
+
+    expect(resumed).toMatchObject({ id: original.id, state: "queued" });
+    expect(send).toHaveBeenCalledWith({ ownerId: "a", jobId: original.id });
+  });
   it("continues bounded model attempts without exhausting failure retries", async () => {
     const job = await a.enqueueJob({
       kind: "synthesize",

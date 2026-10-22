@@ -631,6 +631,7 @@ export class DossierRepository {
     kind: Job["kind"];
     targetId: string;
     key: string;
+    resumeTerminalSynthesis?: boolean;
   }) {
     const id = crypto.randomUUID();
     await this.db
@@ -654,19 +655,44 @@ export class DossierRepository {
       .bind(this.context.ownerId, input.key)
       .first();
     if (!row) throw new DossierError("JOB_CREATE_FAILED", 503);
-    const job = this.parseJob(row);
+    let job = this.parseJob(row);
+    let shouldDispatch = job.id === id;
+    if (
+      input.resumeTerminalSynthesis &&
+      input.kind === "synthesize" &&
+      job.kind === "synthesize" &&
+      job.targetId === input.targetId &&
+      (job.state === "failed" || job.state === "cancelled")
+    ) {
+      const resumedAt = this.now();
+      const progress = { ...job.progress, stage: "queued", resumeAt: resumedAt };
+      const result = await this.db
+        .prepare(
+          "UPDATE dossier_jobs SET state='queued',attempts=0,available_at=?,dispatched_at=NULL,error=NULL,lease=NULL,lease_until=NULL,progress=? WHERE owner_id=? AND id=? AND kind='synthesize' AND target_id=? AND state IN ('failed','cancelled')",
+        )
+        .bind(
+          resumedAt,
+          JSON.stringify(progress),
+          this.context.ownerId,
+          job.id,
+          input.targetId,
+        )
+        .run();
+      shouldDispatch ||= result.meta.changes > 0;
+      job = await this.readJob(job.id);
+    }
     // Persist first; the cron dispatcher recovers any unsuccessful immediate send.
-    if (job.id === id && this.env.DOSSIER_QUEUE) {
+    if (shouldDispatch && this.env.DOSSIER_QUEUE) {
       try {
         await this.env.DOSSIER_QUEUE.send({
           ownerId: this.context.ownerId,
-          jobId: id,
+          jobId: job.id,
         });
         await this.db
           .prepare(
             "UPDATE dossier_jobs SET dispatched_at=? WHERE owner_id=? AND id=?",
           )
-          .bind(this.now(), this.context.ownerId, id)
+          .bind(this.now(), this.context.ownerId, job.id)
           .run();
       } catch {
         /* Durable outbox remains eligible for recovery. */

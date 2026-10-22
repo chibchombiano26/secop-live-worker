@@ -44,6 +44,19 @@ wrong company fails closed. The cron outbox recovers queued or expired work;
 budget continuations get a new Workflow identity. The existing queue processor
 remains available for local configurations without a Workflow binding.
 
+A fresh dossier prepare/inventory request also retries a failed or cancelled
+synthesis job for the current corpus revision, using its existing idempotency key
+and preserving saved analysis checkpoints. It leaves queued, running and
+succeeded synthesis jobs unchanged. Extraction completion does not revive a
+cancelled synthesis job.
+
+Synthesis reads cached analysis by exact content key within the current owner.
+Extraction prefetches at most 80 fragment keys at a time and releases each window;
+joint-review and split-fragment cache reads are batched on demand. Unrelated
+historical cache entries cannot exhaust a global preload limit. Cache misses
+recompute the requested analysis, while storage and integrity failures remain
+visible instead of silently discarding evidence.
+
 ## Build and deployment
 
 `npm --prefix worker run bundle` uses the official Flue and Cloudflare Vite plugins,
@@ -109,7 +122,7 @@ its document-evidence association. Pending OCR and unavailable source warnings
 remain visible, including when copying answers.
 
 Planning and evidence inference share per-segment call and owner daily budgets.
-The configured model limits are 64 calls per job and 1,500 calls per owner per
+The production model limits are 64 calls per resumable segment and 10,000 calls per owner per
 day; concurrency does not increase either budget.
 Actual Flue envelope inference is additionally limited to eight calls per saved
 job/day; tool inspection has an eight-call limit too. Receipt-backed retries do
