@@ -67,6 +67,12 @@ export type ModelProviderLabel =
   | "Nebius"
   | "Inference.net"
   | "unknown";
+export type ModelHttp403Cause =
+  | "guardrail"
+  | "key_limit"
+  | "budget_limit"
+  | "provider_policy"
+  | "unknown";
 export type ModelErrorDiagnostic = {
   provider: ModelProviderLabel;
   phase: ModelInvalidOutputPhase;
@@ -80,6 +86,7 @@ export type ModelErrorDiagnostic = {
     "length" | "stop" | "tool_calls" | "error" | "content_filter" | "other";
   errorType?: ModelProviderErrorType;
   providerErrorCode?: number;
+  http403Cause?: ModelHttp403Cause;
 };
 export class DossierError extends Error {
   constructor(

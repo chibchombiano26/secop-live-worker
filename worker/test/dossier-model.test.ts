@@ -346,6 +346,133 @@ describe("provider failure classification", () => {
   });
 
   it.each([
+    [
+      "key_limit",
+      {
+        error: {
+          code: 403,
+          message: "private per-key limit message",
+          metadata: { limit_source: "openrouter_key_limit", limit_usd: 10 },
+        },
+      },
+    ],
+    [
+      "guardrail",
+      {
+        error: {
+          code: 403,
+          message: "private guardrail message",
+          metadata: { limit_source: "openrouter_guardrail_budget" },
+        },
+      },
+    ],
+    [
+      "guardrail",
+      {
+        error: {
+          code: 403,
+          message: "private pipeline block",
+          metadata: { private_field: "private pipeline metadata" },
+        },
+        openrouter_metadata: {
+          pipeline: [{ type: "guardrail", summary: "private stage details" }],
+        },
+      },
+    ],
+    [
+      "budget_limit",
+      {
+        error: {
+          code: 403,
+          message: "Budget limit exceeded (private workspace details)",
+          metadata: { limit_source: "openrouter_workspace_budget" },
+        },
+      },
+    ],
+    [
+      "budget_limit",
+      {
+        error: {
+          code: 403,
+          message: "Budget limit exceeded (private budget information)",
+        },
+      },
+    ],
+    [
+      "provider_policy",
+      {
+        error: {
+          code: 403,
+          message: "private content policy message",
+          metadata: { error_type: "content_policy_violation" },
+        },
+      },
+    ],
+    [
+      "guardrail",
+      {
+        error: {
+          code: 403,
+          message: "Request blocked: private guardrail rule",
+          metadata: { patterns: ["private matching pattern"] },
+        },
+      },
+    ],
+    [
+      "unknown",
+      {
+        error: {
+          code: 403,
+          message: "private unfamiliar provider response",
+          metadata: { private_field: "private metadata value" },
+        },
+      },
+    ],
+  ] as const)(
+    "classifies 403 as %s without persisting response text",
+    async (cause, body) => {
+      const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        Response.json(body, { status: 403 }),
+      );
+      try {
+        const failure = await new ConfiguredModel({
+          MODEL_NAME: "test",
+          MODEL_URL: "https://openrouter.ai/api/v1/chat/completions",
+          OPENROUTER_API_KEY: "private-key",
+        })
+          .generate(input)
+          .catch((error) => error);
+
+        expect(failure).toMatchObject({
+          code: "MODEL_PROVIDER_HTTP_403",
+          retryable: false,
+          diagnostic: { http403Cause: cause },
+        });
+        expect(request).toHaveBeenCalledTimes(1);
+        const serialized = JSON.stringify(failure);
+        for (const privateValue of [
+          "private per-key limit message",
+          "private guardrail message",
+          "private workspace details",
+          "private content policy message",
+          "private guardrail rule",
+          "private matching pattern",
+          "private pipeline block",
+          "private pipeline metadata",
+          "private stage details",
+          "private budget information",
+          "private unfamiliar provider response",
+          "private metadata value",
+          "private-key",
+        ])
+          expect(serialized).not.toContain(privateValue);
+      } finally {
+        request.mockRestore();
+      }
+    },
+  );
+
+  it.each([
     [401, false],
     [402, false],
     [429, true],
