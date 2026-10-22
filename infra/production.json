@@ -76,7 +76,7 @@
   "variables": {
     "AI_PROVIDER_LABEL": "OpenRouter",
     "CACHE_TTL": "600",
-    "MODEL_DAILY_LIMIT": "1500",
+    "MODEL_DAILY_LIMIT": "10000",
     "MODEL_MAX_CALLS": "64",
     "MODEL_MAX_INPUT_CHARS": "50000",
     "MODEL_NAME": "openai/gpt-oss-120b",
