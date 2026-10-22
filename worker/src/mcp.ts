@@ -28,7 +28,10 @@ export function createHandler(
   waitUntil?: (promise: Promise<unknown>) => void,
 ) {
   return createMcpHandler(() => {
-    const server = new McpServer({ name: "secop-live", version: "1.0.0" });
+    const server = new McpServer(
+      { name: "secop-live", version: "1.0.0" },
+      { maxToolInputElements: 16_000 },
+    );
 
     server.registerTool(
       "buscar_licitaciones",

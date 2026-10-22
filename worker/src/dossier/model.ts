@@ -1,6 +1,7 @@
 import {
   DossierError,
   type ModelErrorDiagnostic,
+  type ModelProviderErrorType,
   type ModelProviderLabel,
 } from "./contracts";
 import { boundedBytes } from "./downloads";
@@ -76,12 +77,89 @@ const providerLabels: Record<string, ModelProviderLabel> = {
   nebius: "Nebius",
   "inference.net": "Inference.net",
 };
+const providerSlugs: Partial<Record<ModelProviderLabel, string>> = {
+  Groq: "groq",
+  DeepInfra: "deepinfra",
+};
+const providerErrorTypes = new Set<ModelProviderErrorType>([
+  "context_length_exceeded",
+  "max_tokens_exceeded",
+  "token_limit_exceeded",
+  "string_too_long",
+  "authentication",
+  "permission_denied",
+  "payment_required",
+  "rate_limit_exceeded",
+  "provider_overloaded",
+  "provider_unavailable",
+  "invalid_request",
+  "invalid_prompt",
+  "not_found",
+  "precondition_failed",
+  "payload_too_large",
+  "unprocessable",
+  "content_policy_violation",
+  "refusal",
+  "invalid_image",
+  "image_too_large",
+  "image_too_small",
+  "unsupported_image_format",
+  "image_not_found",
+  "image_download_failed",
+  "server",
+  "timeout",
+  "unmapped",
+]);
+const retryableProviderErrorTypes = new Set<ModelProviderErrorType>([
+  "rate_limit_exceeded",
+  "provider_overloaded",
+  "provider_unavailable",
+  "server",
+  "timeout",
+]);
+const nonRetryableProviderErrorTypes = new Set<ModelProviderErrorType>([
+  "authentication",
+  "permission_denied",
+  "payment_required",
+  "invalid_request",
+  "invalid_prompt",
+  "not_found",
+  "precondition_failed",
+  "payload_too_large",
+  "unprocessable",
+  "content_policy_violation",
+  "refusal",
+  "invalid_image",
+  "image_too_large",
+  "image_too_small",
+  "unsupported_image_format",
+  "image_not_found",
+  "image_download_failed",
+]);
+const outputLengthErrorTypes = new Set<ModelProviderErrorType>([
+  "context_length_exceeded",
+  "max_tokens_exceeded",
+  "token_limit_exceeded",
+  "string_too_long",
+]);
 function safeProviderLabel(value: unknown): ModelProviderLabel | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim().toLowerCase();
   return Object.hasOwn(providerLabels, normalized)
     ? providerLabels[normalized]
     : undefined;
+}
+function safeProviderSlug(value: unknown) {
+  const label = safeProviderLabel(value);
+  return label ? providerSlugs[label] : undefined;
+}
+function safeProviderErrorType(value: unknown):
+  | ModelProviderErrorType
+  | undefined {
+  if (typeof value !== "string") return undefined;
+  return providerErrorTypes.has(value as ModelProviderErrorType)
+    ? (value as ModelProviderErrorType)
+    : "unmapped";
 }
 function safeContentType(value: string | null) {
   const normalized = value?.split(";", 1)[0]?.trim().toLowerCase();
@@ -185,6 +263,7 @@ export class ConfiguredModel implements ModelProvider {
       if (url.protocol !== "https:" || url.username || url.password || !key)
         throw new DossierError("MODEL_UNCONFIGURED", 503);
     }
+    const defaultProvider = provider;
 
     let result: unknown;
     let structuredResult = false;
@@ -193,6 +272,8 @@ export class ConfiguredModel implements ModelProvider {
       "unknown";
     let finishReason: ModelErrorDiagnostic["finishReason"];
     let providerErrorCode: number | undefined;
+    let providerErrorType: ModelProviderErrorType | undefined;
+    let ignoredProviderSlugs: string[] = [];
     const invalidOutput = (
       phase: ModelErrorDiagnostic["phase"],
       length?: number,
@@ -207,13 +288,37 @@ export class ConfiguredModel implements ModelProvider {
         },
         ...(finishReason ? { finishReason } : {}),
         ...(providerErrorCode === undefined ? {} : { providerErrorCode }),
+        ...(providerErrorType ? { errorType: providerErrorType } : {}),
+      });
+    const providerError = (
+      code: string,
+      retryable: boolean,
+      length?: number,
+    ) =>
+      new DossierError(code, 502, retryable, {
+        provider,
+        phase: "provider_error",
+        elapsedMs: Math.max(0, Date.now() - requestStarted),
+        shape: {
+          contentType,
+          ...(length === undefined ? {} : { length }),
+        },
+        ...(finishReason ? { finishReason } : {}),
+        ...(providerErrorCode === undefined ? {} : { providerErrorCode }),
+        ...(providerErrorType ? { errorType: providerErrorType } : {}),
       });
     for (let attempt = 0; attempt < MAX_PHYSICAL_ATTEMPTS; attempt++) {
       if (Date.now() - this.started > 600000 || this.calls >= budget)
         throw new DossierError("MODEL_BUDGET_EXCEEDED", 429);
+      provider = defaultProvider;
+      contentType = "unknown";
+      finishReason = undefined;
+      providerErrorCode = undefined;
+      providerErrorType = undefined;
       this.calls++;
       await this.heartbeat?.();
       await this.consumeBudget?.();
+      let failedProviderSlug: string | undefined;
 
       try {
         if (useWorkersAI) {
@@ -290,6 +395,9 @@ export class ConfiguredModel implements ModelProvider {
                       data_collection: "deny",
                       require_parameters: true,
                       ...(openrouter && maxPrice ? { max_price: maxPrice } : {}),
+                      ...(ignoredProviderSlugs.length
+                        ? { ignore: ignoredProviderSlugs }
+                        : {}),
                     },
                     reasoning: { effort: "low" },
                   }
@@ -327,7 +435,103 @@ export class ConfiguredModel implements ModelProvider {
           if (typeof payload?.provider === "string")
             provider = safeProviderLabel(payload.provider) ?? "unknown";
           finishReason = safeFinishReason(payload?.choices?.[0]?.finish_reason);
-          providerErrorCode = numericProviderErrorCode(payload?.error?.code);
+          const choiceError = payload?.choices?.[0]?.error;
+          const rootError = payload?.error;
+          const embeddedError = rootError ?? choiceError;
+          providerErrorCode =
+            numericProviderErrorCode(rootError?.code) ??
+            numericProviderErrorCode(choiceError?.code);
+          providerErrorType =
+            safeProviderErrorType(
+              rootError?.metadata?.error_type ?? rootError?.error_type,
+            ) ??
+            safeProviderErrorType(
+              choiceError?.metadata?.error_type ?? choiceError?.error_type,
+            );
+          const errorProviderName =
+            rootError?.metadata?.provider_name ??
+            choiceError?.metadata?.provider_name;
+          if (typeof errorProviderName === "string") {
+            const errorProvider = safeProviderLabel(errorProviderName);
+            if (errorProvider) provider = errorProvider;
+          }
+          failedProviderSlug =
+            safeProviderSlug(payload?.provider) ??
+            safeProviderSlug(rootError?.metadata?.provider_name) ??
+            safeProviderSlug(choiceError?.metadata?.provider_name);
+          if (
+            embeddedError != null ||
+            finishReason === "error" ||
+            finishReason === "content_filter"
+          ) {
+            const hasTransientStatus =
+              providerErrorCode === 408 ||
+              providerErrorCode === 429 ||
+              (providerErrorCode !== undefined &&
+                providerErrorCode >= 500 &&
+                providerErrorCode <= 599);
+            const retryableType =
+              providerErrorType !== undefined &&
+              retryableProviderErrorTypes.has(providerErrorType);
+            const nonRetryableType =
+              providerErrorType !== undefined &&
+              nonRetryableProviderErrorTypes.has(providerErrorType);
+            const lengthType =
+              providerErrorType !== undefined &&
+              outputLengthErrorTypes.has(providerErrorType);
+            const partialContent = payload?.choices?.[0]?.message?.content;
+            const partialLength =
+              typeof partialContent === "string"
+                ? partialContent.length
+                : undefined;
+            if (
+              nonRetryableType ||
+              finishReason === "content_filter" ||
+              providerErrorCode === 401 ||
+              providerErrorCode === 402 ||
+              providerErrorCode === 403
+            )
+              throw providerError(
+                "MODEL_PROVIDER_ERROR",
+                false,
+                partialLength,
+              );
+            if (lengthType)
+              throw providerError(
+                "MODEL_OUTPUT_TRUNCATED",
+                true,
+                partialLength,
+              );
+            if (
+              providerErrorCode !== undefined &&
+              providerErrorCode >= 400 &&
+              providerErrorCode <= 499 &&
+              providerErrorCode !== 408 &&
+              providerErrorCode !== 429
+            )
+              throw providerError(
+                "MODEL_PROVIDER_ERROR",
+                false,
+                partialLength,
+              );
+            if (hasTransientStatus || retryableType) {
+              const retryCode =
+                providerErrorCode === 429 || providerErrorType === "rate_limit_exceeded"
+                  ? "MODEL_PROVIDER_HTTP_429"
+                  : providerErrorCode === 408
+                    ? "MODEL_UNAVAILABLE"
+                  : providerErrorCode !== undefined &&
+                      providerErrorCode >= 500 &&
+                      providerErrorCode <= 599
+                    ? `MODEL_PROVIDER_HTTP_${providerErrorCode}`
+                    : "MODEL_PROVIDER_HTTP_503";
+              throw providerError(retryCode, true, partialLength);
+            }
+            // Never consume partial content from an error finish. Unknown
+            // provider error envelopes are transient only when no explicit
+            // non-retryable status/type says otherwise.
+            throw providerError("MODEL_UNAVAILABLE", true, partialLength);
+          }
           if (finishReason === "length")
             throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
           result = payload?.choices?.[0]?.message?.content;
@@ -341,6 +545,11 @@ export class ConfiguredModel implements ModelProvider {
           attempt + 1 >= MAX_PHYSICAL_ATTEMPTS
         )
           throw failure;
+        if (
+          failedProviderSlug &&
+          !ignoredProviderSlugs.includes(failedProviderSlug)
+        )
+          ignoredProviderSlugs = [...ignoredProviderSlugs, failedProviderSlug];
         const delay = Math.min(
           (this.options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS) * 2 ** attempt,
           1000,

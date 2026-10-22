@@ -83,8 +83,13 @@ only the new agent namespace/Workflow and verifies records afterwards. Existing
 D1, R2, KV, Vectorize and OCR resources are not recreated. Cloudflare deployment
 credentials additionally need Workflows Edit for Workflow reconciliation.
 
-Flue 2.3.0 uses patched MCP client/SDK dependency overrides (2.3.1 and 1.32.1);
-keep audit and compatibility tests green when updating those overrides.
+The MCP server is pinned and overridden to patched version 2.3.1, including the
+copy used by the build-time agents dependency. The MCP client/SDK dependency
+overrides remain 2.3.1 and 1.32.1. Each HTTP request gets a fresh
+MCP server instance, and tool inputs are capped at 16,000 elements to bound
+adversarial or malformed payloads without restricting the largest supported
+company profile. Keep audit and compatibility tests green when updating these
+dependencies or limits.
 The verified OCR build fingerprint covers OCR sources independently of the agent
 dependency lock, so adding Flue does not rebuild the unchanged OCR container. No MCP
 client is exposed to agent instructions.
@@ -142,9 +147,17 @@ at most three physical attempts with bounded backoff. Every physical attempt
 consumes both the segment and owner daily budget and refreshes the job lease.
 Invalid output, truncation and authentication errors are not retried by this
 transport layer; source splitting and validation remain authoritative.
-Invalid model output carries bounded diagnostic metadata across Workflow steps:
+OpenRouter may return a generation error inside an HTTP 200 response, either
+at the top level or inside its first choice. These errors are classified before
+reading any partial content. Transient availability failures use the same bounded
+physical-attempt budget and exclude the failed provider only for the remaining
+attempts of that inference, preserving model identity, schema, privacy and price
+constraints. Authentication, billing, permission, content-policy and invalid-request
+errors do not trigger provider fallback. Token-length failures retain the existing
+source-splitting behavior.
+Model response failures carry bounded diagnostic metadata across Workflow steps:
 the parsing phase, elapsed time, response shape, known provider/finish reason,
-and numeric provider error code when available. Diagnostics contain no prompts,
+allowlisted error type and numeric provider error code when available. Diagnostics contain no prompts,
 source excerpts, response text, credentials, or owner identifiers.
 
 OpenRouter provider sorting defaults to `price`; production uses `throughput`

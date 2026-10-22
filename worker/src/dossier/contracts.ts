@@ -17,7 +17,36 @@ export type ModelInvalidOutputPhase =
   | "provider_envelope_json"
   | "missing_content"
   | "content_json"
-  | "workers_ai_shape";
+  | "workers_ai_shape"
+  | "provider_error";
+export type ModelProviderErrorType =
+  | "context_length_exceeded"
+  | "max_tokens_exceeded"
+  | "token_limit_exceeded"
+  | "string_too_long"
+  | "authentication"
+  | "permission_denied"
+  | "payment_required"
+  | "rate_limit_exceeded"
+  | "provider_overloaded"
+  | "provider_unavailable"
+  | "invalid_request"
+  | "invalid_prompt"
+  | "not_found"
+  | "precondition_failed"
+  | "payload_too_large"
+  | "unprocessable"
+  | "content_policy_violation"
+  | "refusal"
+  | "invalid_image"
+  | "image_too_large"
+  | "image_too_small"
+  | "unsupported_image_format"
+  | "image_not_found"
+  | "image_download_failed"
+  | "server"
+  | "timeout"
+  | "unmapped";
 export type ModelProviderLabel =
   | "Workers AI"
   | "OpenRouter"
@@ -49,6 +78,7 @@ export type ModelErrorDiagnostic = {
   };
   finishReason?:
     "length" | "stop" | "tool_calls" | "error" | "content_filter" | "other";
+  errorType?: ModelProviderErrorType;
   providerErrorCode?: number;
 };
 export class DossierError extends Error {
