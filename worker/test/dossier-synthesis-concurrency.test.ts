@@ -111,6 +111,12 @@ describe("bounded complete dossier extraction", () => {
   });
   it("settles in-flight results before yielding and resumes cached fragments without losing pages", async () => {
     const cached = new Map<string, unknown>();
+    const resumableChunks: EvidenceChunk[] = Array.from({ length: 24 }, (_, i) => ({
+      documentVersionId: "long-tender",
+      page: i + 1,
+      index: i,
+      text: `Requirement on source page ${i + 1}.`,
+    }));
     const cache = {
       get: async (k: string) => cached.get(k) ?? null,
       put: async (k: string, v: unknown) => {
@@ -132,17 +138,59 @@ describe("bounded complete dossier extraction", () => {
         return part(chunk);
       },
     };
-    await expect(extractRequirements(chunks, model, cache)).rejects.toThrow(
-      "temporary model interruption",
-    );
-    expect(cached.size).toBe(7);
+    const options = { concurrency: 16 };
+    await expect(
+      extractRequirements(resumableChunks, model, cache, options),
+    ).rejects.toThrow("temporary model interruption");
+    expect(cached.size).toBe(15);
     failing = false;
     visited.length = 0;
-    const result = await extractRequirements(chunks, model, cache);
+    const result = await extractRequirements(
+      resumableChunks,
+      model,
+      cache,
+      options,
+    );
     expect(result.requirements.map((r) => r.citations[0].page)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+      ...resumableChunks.map((chunk) => chunk.page),
     ]);
-    expect(visited).not.toContain(2);
-    expect(visited).not.toContain(3);
+    for (const chunk of resumableChunks.slice(1, 16))
+      expect(visited).not.toContain(chunk.page);
+    expect(visited).toContain(1);
+    expect(visited).toContain(17);
+  });
+
+  it("caps concurrent nested truncation work at sixteen and retains every source page", async () => {
+    const denseChunks: EvidenceChunk[] = Array.from({ length: 24 }, (_, i) => ({
+      documentVersionId: "dense-tender",
+      page: i + 1,
+      index: i,
+      text: `Page ${i + 1}: ${"dense requirement text ".repeat(90)}`,
+    }));
+    let active = 0;
+    let maximum = 0;
+    const result = await extractRequirements(
+      denseChunks,
+      {
+        id: "test",
+        generate: async (input) => {
+          const chunk = input.evidence[0] as EvidenceChunk;
+          active++;
+          maximum = Math.max(maximum, active);
+          await delay(1);
+          active--;
+          if (chunk.text.length > 500)
+            throw new DossierError("MODEL_OUTPUT_TRUNCATED", 502, true);
+          return { summary: String(chunk.page), conflicts: [], requirements: [] };
+        },
+      },
+      undefined,
+      { concurrency: 16 },
+    );
+
+    expect(maximum).toBeLessThanOrEqual(16);
+    expect(new Set(result.summaries)).toEqual(
+      new Set(denseChunks.map((chunk) => String(chunk.page))),
+    );
   });
 });

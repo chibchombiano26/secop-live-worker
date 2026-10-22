@@ -3,6 +3,7 @@ import {
   validateCitations,
   extractRequirements,
 } from "../src/dossier/synthesis";
+import { modelExtractionConcurrency } from "../src/dossier/model-concurrency";
 import type { EvidenceChunk } from "../src/dossier/extraction";
 const chunks: EvidenceChunk[] = [
   {
@@ -159,6 +160,59 @@ describe("grounded cross-document synthesis", () => {
       result.requirements.map((r) => r.citations[0].documentVersionId),
     ).toEqual(["pliego", "adenda"]);
     expect(result.requirements).toHaveLength(2);
+  });
+
+  it("keeps extraction at eight concurrent model calls by default and allows a bounded override", async () => {
+    const inputs = Array.from({ length: 40 }, (_, index) => ({
+      ...chunks[0],
+      page: index + 1,
+      text: `Page ${index + 1} contains a requirement.`,
+    }));
+    async function maximumConcurrency(concurrency?: number) {
+      let active = 0;
+      let maximum = 0;
+      const result = await extractRequirements(
+        inputs,
+        {
+          id: "test",
+          generate: async (input) => {
+            active++;
+            maximum = Math.max(maximum, active);
+            await new Promise((resolve) => setTimeout(resolve, 2));
+            active--;
+            return {
+              summary: input.evidence[0].text,
+              requirements: [],
+              conflicts: [],
+            };
+          },
+        },
+        undefined,
+        concurrency === undefined ? undefined : { concurrency },
+      );
+      return { maximum, summaries: result.summaries };
+    }
+
+    const defaults = await maximumConcurrency();
+    expect(defaults.maximum).toBe(8);
+    expect(defaults.summaries).toEqual(inputs.map((chunk) => chunk.text));
+    const configured = await maximumConcurrency(16);
+    expect(configured.maximum).toBe(16);
+    expect(configured.summaries).toEqual(inputs.map((chunk) => chunk.text));
+  });
+
+  it("validates extraction concurrency and defaults to eight", () => {
+    expect(modelExtractionConcurrency()).toBe(8);
+    expect(modelExtractionConcurrency("16")).toBe(16);
+    expect(() => modelExtractionConcurrency("0")).toThrow(
+      "MODEL_BUDGET_UNCONFIGURED",
+    );
+    expect(() => modelExtractionConcurrency("17")).toThrow(
+      "MODEL_BUDGET_UNCONFIGURED",
+    );
+    expect(() => modelExtractionConcurrency("fast")).toThrow(
+      "MODEL_BUDGET_UNCONFIGURED",
+    );
   });
   it("rejects uncited invented requirements instead of treating model text as evidence", async () => {
     await expect(
