@@ -161,7 +161,9 @@ replay overhead while keeping saved fragment checkpoints and both budgets.
 Transient network failures, response-body timeouts, HTTP 429 and HTTP 5xx receive
 at most three physical attempts with bounded backoff. Every physical attempt
 consumes both the segment and owner daily budget and refreshes the job lease.
-Invalid output, truncation and authentication errors are not retried by this
+Unparseable JSON content from an otherwise valid model response receives the
+same bounded physical retry budget. Malformed provider envelopes, truncation,
+authentication errors and schema-invalid output are not retried by this
 transport layer; source splitting and validation remain authoritative.
 OpenRouter may return a generation error inside an HTTP 200 response, either
 at the top level or inside its first choice. These errors are classified before

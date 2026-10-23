@@ -182,6 +182,76 @@ describe("configured model boundaries", () => {
     expect(run).toHaveBeenCalledTimes(2);
     expect(consumeBudget).toHaveBeenCalledTimes(2);
   });
+  it("retries unparseable Workers AI JSON content and recovers within the physical attempt budget", async () => {
+    let attempts = 0;
+    const consumeBudget = vi.fn(async () => {});
+    const run = vi.fn(async () => {
+      attempts++;
+      return {
+        choices: [
+          {
+            finish_reason: "stop",
+            message: {
+              content:
+                attempts === 1 ? "private malformed response" : '{"answer":"ok"}',
+            },
+          },
+        ],
+      };
+    });
+    const model = new ConfiguredModel(
+      {
+        MODEL_NAME: "openai/gpt-oss-120b",
+        MODEL_TRANSPORT: "workers_ai",
+        AI: { run },
+      },
+      undefined,
+      consumeBudget,
+      { retryDelayMs: 0, sleep: async () => {} },
+    );
+
+    await expect(model.generate(input)).resolves.toEqual({ answer: "ok" });
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(consumeBudget).toHaveBeenCalledTimes(2);
+  });
+  it("caps malformed Workers AI JSON retries and keeps diagnostics free of response text", async () => {
+    const privateResponse = "private malformed model response";
+    const run = vi.fn(async () => ({
+      choices: [
+        {
+          finish_reason: "stop",
+          message: { content: privateResponse },
+        },
+      ],
+    }));
+    const consumeBudget = vi.fn(async () => {});
+    const model = new ConfiguredModel(
+      {
+        MODEL_NAME: "openai/gpt-oss-120b",
+        MODEL_TRANSPORT: "workers_ai",
+        AI: { run },
+      },
+      undefined,
+      consumeBudget,
+      { retryDelayMs: 0, sleep: async () => {} },
+    );
+
+    const failure = await model.generate(input).catch((error) => error);
+
+    expect(failure).toMatchObject({
+      code: "MODEL_INVALID_OUTPUT",
+      retryable: true,
+      diagnostic: {
+        provider: "Workers AI",
+        phase: "content_json",
+        finishReason: "stop",
+        shape: { contentType: "workers_ai", length: privateResponse.length },
+      },
+    });
+    expect(JSON.stringify(failure)).not.toContain(privateResponse);
+    expect(run).toHaveBeenCalledTimes(3);
+    expect(consumeBudget).toHaveBeenCalledTimes(3);
+  });
   it("honors a smaller configured provider context budget", async () => {
     const model = new ConfiguredModel({
       MODEL_NAME: "@cf/test",
@@ -462,7 +532,7 @@ describe("provider failure classification", () => {
           phase: "provider_error",
         },
       });
-      expect(failure.diagnostic.providerErrorCode).toBeUndefined();
+      expect(JSON.stringify(failure)).not.toContain('"providerErrorCode"');
       expect(request).toHaveBeenCalledTimes(1);
       expect(bodyCancelled).toBe(true);
       expect(JSON.stringify(failure)).not.toContain("x".repeat(200));
