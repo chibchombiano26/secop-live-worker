@@ -153,7 +153,7 @@ its document-evidence association. Pending OCR and unavailable source warnings
 remain visible, including when copying answers.
 
 Planning and evidence inference share per-segment call and owner daily budgets.
-The production model limits are 256 calls per resumable segment and 25,000 calls per owner per
+The production model limits are 512 calls per resumable segment and 50,000 calls per owner per
 day; concurrency does not increase either budget. No new model attempt starts
 after ten minutes in a segment, preserving time for in-flight calls to settle
 before the fifteen-minute Workflow step deadline. Larger segments reduce cached
