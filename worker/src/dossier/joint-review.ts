@@ -10,7 +10,7 @@ import type { Citation, Requirement } from "./synthesis";
 
 const REQUEST_LIMIT = 48_000;
 // This aggregates independently bounded responses, rather than one inference.
-const REPORT_LIMIT = 20_000_000;
+const REPORT_LIMIT = 28_000_000;
 // Bump when the joint-review prompt, planner, or cached aggregate shape changes.
 const REVIEW_PLAN_VERSION = 1;
 const candidateSchema = z.object({

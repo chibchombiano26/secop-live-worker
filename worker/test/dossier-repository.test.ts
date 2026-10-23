@@ -556,13 +556,40 @@ describe("persisted owner scoped dossiers and jobs", () => {
         0,
       ),
     ).rejects.toMatchObject({ code: "RECORD_TOO_LARGE" });
+    const expandedReport = { dossierId: "CO1.REQ.500", payload: "x".repeat(20_000_000) };
+    const readDuringSave = vi.spyOn(a, "read");
+    await a.save("report", "expanded-report", expandedReport, 0);
+    expect(readDuringSave).not.toHaveBeenCalled();
+    readDuringSave.mockRestore();
+    expect((await a.read<typeof expandedReport>("report", "expanded-report")).value)
+      .toEqual(expandedReport);
+    const readDuringUpsert = vi.spyOn(a, "read");
+    expect((await a.upsert("report", "expanded-report", expandedReport)).revision)
+      .toBe(2);
+    expect(readDuringUpsert).not.toHaveBeenCalled();
+    readDuringUpsert.mockRestore();
+    const pointerRow = await env.DOSSIER_DB.prepare(
+      "SELECT value FROM dossier_records WHERE owner_id=? AND kind='report' AND id=?",
+    ).bind("a", "expanded-report").first() as { value: string } | null;
+    const pointer = JSON.parse(pointerRow!.value).__saviaAggregateBlob;
+    expect(pointer).toMatchObject({ version: 2, kind: "report" });
+    expect(pointer.parts.length).toBeGreaterThan(1);
+    expect((await a.readMany<typeof expandedReport>("report", ["expanded-report"]))[0].value)
+      .toEqual(expandedReport);
+    await a.putFile(
+      pointer.parts[1].key,
+      new TextEncoder().encode("z".repeat(pointer.parts[1].length)),
+      "application/json",
+    );
+    await expect(a.read("report", "expanded-report")).rejects.toMatchObject({
+      code: "AGGREGATE_BLOB_CORRUPT",
+    });
+    await a.deleteFile(pointer.parts[0].key);
+    await expect(a.read("report", "expanded-report")).rejects.toMatchObject({
+      code: "AGGREGATE_BLOB_MISSING",
+    });
     await expect(
-      a.save(
-        "report",
-        "oversized-report",
-        { payload: "x".repeat(20_000_000) },
-        0,
-      ),
+      a.save("assessment", "oversized-assessment", { payload: "x".repeat(20_000_000) }, 0),
     ).rejects.toMatchObject({ code: "RECORD_TOO_LARGE" });
   });
 
