@@ -452,6 +452,7 @@ export async function reviewJointRequirements(
     revision?: number;
     resume?: { cursor: number; fingerprint: string };
     verificationConcurrency?: number;
+    resumeVerification?: { cursor: number; fingerprint: string };
   },
 ): Promise<JointReviewResult> {
   const reviewConcurrency = modelJointReviewConcurrency(options?.concurrency);
@@ -855,17 +856,39 @@ export async function reviewJointRequirements(
   let verificationRequests = 0;
   let maxRequestChars = maxSentReviewRequestChars;
   const reviewCandidates = [...candidates.values()];
+  const verificationFingerprint = await sha256(
+    [
+      "joint-review-verification:v1",
+      resumeFingerprint,
+      JSON.stringify(
+        reviewCandidates.map(({ left, right, kind }) => [left, right, kind]),
+      ),
+    ].join(":"),
+  );
+  const requestedVerificationCursor = options?.resumeVerification?.cursor;
+  const verificationCursorIsValid =
+    typeof requestedVerificationCursor === "number" &&
+    Number.isSafeInteger(requestedVerificationCursor) &&
+    requestedVerificationCursor >= 0 &&
+    requestedVerificationCursor <= reviewCandidates.length;
+  let verificationCursor =
+    options?.resumeVerification?.fingerprint === verificationFingerprint &&
+    verificationCursorIsValid
+      ? requestedVerificationCursor
+      : 0;
+  const resumeVerificationPrefix = verificationCursor;
   const verificationResults: Array<{
     candidate: Candidate;
     verified: VerificationValue;
     citations: Citation[];
   }> = new Array(reviewCandidates.length);
-  let verificationCompleted = 0;
+  const completedVerificationIndices = new Set<number>();
   let verificationProgressWrites = Promise.resolve();
   await checkpoint?.({
     phase: "joint_verification",
-    candidatesCompleted: 0,
+    candidatesCompleted: verificationCursor,
     candidatesTotal: reviewCandidates.length,
+    verificationFingerprint,
   });
   const verificationInstructions =
     "Return {decision:'conflict'|'amendment'|'unconfirmed',reason:string,citationIds:string[],previous?:number,replacement?:number,changeExcerpt?:string}. For an amendment, changeExcerpt must copy a contiguous passage from the replacement source that explicitly modifies or replaces the prior term. Without that passage return unconfirmed. Verify the proposed relationship using only the two original requirement wordings and their exact quoted evidence. Cite valid supplied evidence IDs from BOTH requirements for any confirmed conflict or amendment. A conflict means the two obligations are mutually incompatible for the same scope and period. Repeated obligations, a longer wording, extra detail, or compatible general and specific terms are NOT conflicts. An amendment requires an explicit source statement replacing, correcting or modifying an identified earlier term. Two different evaluation criteria or a condition described elsewhere are NOT evidence of an amendment by themselves. Do not infer an amendment from later chronology; the text must explicitly change a prior term. If evidence does not establish the relationship, return unconfirmed. For an amendment, previous and replacement must be the original global requirement indices and the text must explicitly establish that direction. Never invent quotations, IDs or facts.";
@@ -1019,15 +1042,24 @@ export async function reviewJointRequirements(
   ) {
     if (cacheMiss) await cache.put(task.key, value.verified);
     verificationResults[task.index] = value;
-    const count = ++verificationCompleted;
-    verificationProgressWrites = verificationProgressWrites.then(async () => {
-      await checkpoint?.({
-        phase: "joint_verification",
-        candidatesCompleted: count,
-        candidatesTotal: reviewCandidates.length,
-      });
-    });
-    await verificationProgressWrites;
+    completedVerificationIndices.add(task.index);
+    const previousCursor = verificationCursor;
+    while (completedVerificationIndices.delete(verificationCursor))
+      verificationCursor++;
+    if (verificationCursor !== previousCursor) {
+      const count = verificationCursor;
+      verificationProgressWrites = verificationProgressWrites.then(
+        async () => {
+          await checkpoint?.({
+            phase: "joint_verification",
+            candidatesCompleted: count,
+            candidatesTotal: reviewCandidates.length,
+            verificationFingerprint,
+          });
+        },
+      );
+      await verificationProgressWrites;
+    }
   }
   async function verifySingleton(task: VerificationTask) {
     checkRequest(task.input);
@@ -1186,7 +1218,7 @@ export async function reviewJointRequirements(
       await verifyBatch(missing.slice(offset, offset + 4));
     }
   }
-  let nextCandidate = 0;
+  let nextCandidate = verificationCursor;
   let verificationFailed = false;
   let verificationFailure: unknown;
   async function visitCandidates() {
@@ -1221,6 +1253,22 @@ export async function reviewJointRequirements(
     await verificationProgressWrites.catch(() => undefined);
     throw verificationFailure;
   }
+  let nextCachedPrefix = 0;
+  async function reloadCachedVerificationPrefix() {
+    while (nextCachedPrefix < resumeVerificationPrefix) {
+      const index = nextCachedPrefix++;
+      const task = await buildVerificationTask(index);
+      const cached = await cache.get(task.key);
+      if (cached === null) throw invalidOutput();
+      verificationResults[index] = validateVerification(task, cached);
+    }
+  }
+  await Promise.all(
+    Array.from(
+      { length: Math.min(64, resumeVerificationPrefix) },
+      reloadCachedVerificationPrefix,
+    ),
+  );
   for (const { candidate, verified, citations } of verificationResults) {
     if (verified.decision === "amendment")
       amendments.push({

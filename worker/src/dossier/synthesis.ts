@@ -377,6 +377,7 @@ export async function synthesizeDossier(
     jointReviewConcurrency?: number;
     jointReviewResume?: { cursor: number; fingerprint: string };
     jointVerificationConcurrency?: number;
+    jointVerificationResume?: { cursor: number; fingerprint: string };
   },
 ) {
   const { dossier, chunks } = await dossierEvidence(repo, dossierId);
@@ -482,6 +483,7 @@ export async function synthesizeDossier(
       verificationConcurrency: modelJointVerifyConcurrency(
         options?.jointVerificationConcurrency,
       ),
+      resumeVerification: options?.jointVerificationResume,
     },
   );
   const overviews = joint.summaries;
