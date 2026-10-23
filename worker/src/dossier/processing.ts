@@ -201,6 +201,8 @@ export async function executeProcessingJob(
     case "synthesize": {
       const dossier = await repo.readDossier(job.targetId);
       const provider = model();
+      const reviewCursor = job.progress.reviewGroupsCursor;
+      const reviewFingerprint = job.progress.reviewGroupsFingerprint;
       await checkpoint({ stage: "analyzing_documents", model: provider.id });
       const result = await synthesizeDossier(
         repo,
@@ -215,6 +217,15 @@ export async function executeProcessingJob(
           jointReviewConcurrency: modelJointReviewConcurrency(
             env.MODEL_JOINT_REVIEW_CONCURRENCY,
           ),
+          ...(Number.isSafeInteger(reviewCursor) &&
+          typeof reviewFingerprint === "string"
+            ? {
+                jointReviewResume: {
+                  cursor: reviewCursor as number,
+                  fingerprint: reviewFingerprint,
+                },
+              }
+            : {}),
         },
       );
       await checkpoint({

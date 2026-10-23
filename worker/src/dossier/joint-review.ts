@@ -8,18 +8,22 @@ import type { Citation, Requirement } from "./synthesis";
 const REQUEST_LIMIT = 48_000;
 // This aggregates independently bounded responses, rather than one inference.
 const REPORT_LIMIT = 20_000_000;
+// Bump when the joint-review prompt, planner, or cached aggregate shape changes.
+const REVIEW_PLAN_VERSION = 1;
+const candidateSchema = z.object({
+  left: z.number().int().nonnegative(),
+  right: z.number().int().nonnegative(),
+  kind: z.enum(["conflict", "amendment"]),
+  reason: z.string().min(1).max(1_000),
+});
 const reviewSchema = z.object({
   summary: z.string().max(6_000),
-  candidates: z
-    .array(
-      z.object({
-        left: z.number().int().nonnegative(),
-        right: z.number().int().nonnegative(),
-        kind: z.enum(["conflict", "amendment"]),
-        reason: z.string().min(1).max(1_000),
-      }),
-    )
-    .max(200),
+  candidates: z.array(candidateSchema).max(200),
+});
+const reviewAggregateSchema = z.object({
+  version: z.literal(REVIEW_PLAN_VERSION),
+  summaries: z.array(z.string()),
+  candidates: z.array(candidateSchema),
 });
 function verificationSchemaForIds(ids: string[]) {
   if (!ids.length) throw invalidOutput();
@@ -422,22 +426,85 @@ export async function reviewJointRequirements(
   coverage: unknown,
   cache: Cache,
   checkpoint?: (progress: Record<string, unknown>) => Promise<void>,
-  options?: { concurrency?: number },
+  options?: {
+    concurrency?: number;
+    revision?: number;
+    resume?: { cursor: number; fingerprint: string };
+  },
 ): Promise<JointReviewResult> {
   const reviewConcurrency = modelJointReviewConcurrency(options?.concurrency);
   const index = sourceIndex(requirements);
   const plan = makeGroups(requirements, index, coverage);
-  const summaries = new Set<string>();
+  const resumePlan = {
+    coverage,
+    blocks: plan.blocks,
+    groups: plan.groups,
+    documents: index.documents,
+    sources: index.sources,
+    requirements: compactRequirements(
+      requirements,
+      requirements.map((_, requirementIndex) => requirementIndex),
+      index.locations,
+    ),
+  };
+  const resumeFingerprint = await sha256(
+    [
+      `joint-review-plan:v${REVIEW_PLAN_VERSION}`,
+      model.id,
+      options?.revision ?? 0,
+      JSON.stringify(resumePlan),
+    ].join(":"),
+  );
+  const aggregateKey = `joint.aggregate.v${REVIEW_PLAN_VERSION}.${resumeFingerprint}`;
+  const cachedAggregate = await cache.get(aggregateKey);
+  let aggregate: z.infer<typeof reviewAggregateSchema> | null = null;
+  if (cachedAggregate !== null) {
+    try {
+      aggregate = reviewAggregateSchema.parse(cachedAggregate);
+    } catch {
+      throw invalidOutput();
+    }
+  }
+  const requestedCursor = options?.resume?.cursor;
+  const cursorIsValid =
+    typeof requestedCursor === "number" &&
+    Number.isSafeInteger(requestedCursor) &&
+    requestedCursor >= 0 &&
+    requestedCursor <= plan.groups.length;
+  const resumeCursor =
+    aggregate !== null
+      ? plan.groups.length
+      : options?.resume?.fingerprint === resumeFingerprint && cursorIsValid
+        ? requestedCursor
+        : 0;
+  const summaries = new Set(aggregate?.summaries ?? []);
   const candidates = new Map<string, Candidate>();
+  for (const candidate of aggregate?.candidates ?? []) {
+    if (
+      candidate.left >= requirements.length ||
+      candidate.right >= requirements.length ||
+      candidate.left === candidate.right
+    )
+      throw invalidOutput();
+    const pair =
+      candidate.left < candidate.right
+        ? `${candidate.left}:${candidate.right}:${candidate.kind}`
+        : `${candidate.right}:${candidate.left}:${candidate.kind}`;
+    candidates.set(pair, candidate);
+  }
   let reviewRequests = 0;
-  const results: z.infer<typeof reviewSchema>[] = [];
-  let completed = 0;
+  const results: Array<{ summary: string; candidates: Candidate[] }> = [];
+  let completed = resumeCursor;
+  let reviewGroupsCursor = resumeCursor;
+  const completedOutOfOrder = new Set<number>();
   let maxSentReviewRequestChars = 0;
   let progressWrites = Promise.resolve();
   await checkpoint?.({
     phase: "joint_review",
-    reviewGroupsCompleted: 0,
+    reviewGroupsCompleted: resumeCursor,
     reviewGroupsTotal: plan.groups.length,
+    reviewGroupsCursor,
+    reviewGroupsFingerprint: resumeFingerprint,
   });
   // Joint output grows with the pairs under review, so a single large
   // group can exceed one bounded inference even when its input fits.
@@ -634,7 +701,7 @@ export async function reviewJointRequirements(
     const position = plan.groups.indexOf(group);
     return position === -1 ? 0 : position;
   }
-  async function reviewGroup(groupIndex: number) {
+  async function loadGroupResult(groupIndex: number) {
     const group = plan.groups[groupIndex];
     const merged = await reviewOne(group);
     for (const candidate of merged.candidates) {
@@ -653,18 +720,27 @@ export async function reviewJointRequirements(
       summary: merged.summary,
       candidates: merged.candidates,
     };
+    return result;
+  }
+  async function reviewGroup(groupIndex: number) {
+    const result = await loadGroupResult(groupIndex);
     results[groupIndex] = result;
     const count = ++completed;
+    completedOutOfOrder.add(groupIndex);
+    while (completedOutOfOrder.delete(reviewGroupsCursor))
+      reviewGroupsCursor++;
     progressWrites = progressWrites.then(async () => {
       await checkpoint?.({
         phase: "joint_review",
         reviewGroupsCompleted: count,
         reviewGroupsTotal: plan.groups.length,
+        reviewGroupsCursor,
+        reviewGroupsFingerprint: resumeFingerprint,
       });
     });
     await progressWrites;
   }
-  let nextGroup = 0;
+  let nextGroup = resumeCursor;
   let failed = false;
   let failure: unknown;
   async function visitGroups() {
@@ -682,31 +758,71 @@ export async function reviewJointRequirements(
   }
   // Settle all in-flight model/cache work before yielding, then merge in the
   // original plan order so completion timing cannot select different candidates.
-  await Promise.all(
-    Array.from(
-      { length: Math.min(reviewConcurrency, plan.groups.length) },
-      visitGroups,
-    ),
-  );
+  if (aggregate === null)
+    await Promise.all(
+      Array.from(
+        { length: Math.min(reviewConcurrency, plan.groups.length) },
+        visitGroups,
+      ),
+    );
+  await progressWrites;
+  await checkpoint?.({
+    phase: "joint_review",
+    reviewGroupsCompleted: completed,
+    reviewGroupsTotal: plan.groups.length,
+    reviewGroupsCursor,
+    reviewGroupsFingerprint: resumeFingerprint,
+    forceCheckpoint: true,
+  });
   if (failed) throw failure;
-  for (let groupIndex = 0; groupIndex < plan.groups.length; groupIndex++) {
-    const group = plan.groups[groupIndex];
-    const result = results[groupIndex];
-    if (group.summaryAllowed && result.summary.trim())
-      summaries.add(result.summary.trim());
-    for (const candidate of result.candidates) {
-      if (
-        candidate.left === candidate.right ||
-        !scopesForGroup(group).left.includes(candidate.left) ||
-        !scopesForGroup(group).right.includes(candidate.right)
-      )
-        throw invalidOutput();
-      const pair =
-        candidate.left < candidate.right
-          ? `${candidate.left}:${candidate.right}:${candidate.kind}`
-          : `${candidate.right}:${candidate.left}:${candidate.kind}`;
-      if (!candidates.has(pair)) candidates.set(pair, candidate);
+  // Resume skips the durable prefix while work is still incomplete. Once all
+  // remaining groups finish, reload that prefix once to preserve the
+  // original ordered aggregate of summaries and candidates.
+  if (aggregate === null) {
+    let nextPrefixGroup = 0;
+    async function visitCachedPrefix() {
+      while (nextPrefixGroup < resumeCursor) {
+        const groupIndex = nextPrefixGroup++;
+        results[groupIndex] = await loadGroupResult(groupIndex);
+      }
     }
+    await Promise.all(
+      Array.from(
+        { length: Math.min(reviewConcurrency, resumeCursor) },
+        visitCachedPrefix,
+      ),
+    );
+  }
+  if (aggregate === null) {
+    for (let groupIndex = 0; groupIndex < plan.groups.length; groupIndex++) {
+      const group = plan.groups[groupIndex];
+      const result = results[groupIndex];
+      if (group.summaryAllowed && result.summary.trim())
+        summaries.add(result.summary.trim());
+      for (const candidate of result.candidates) {
+        if (
+          candidate.left === candidate.right ||
+          !scopesForGroup(group).left.includes(candidate.left) ||
+          !scopesForGroup(group).right.includes(candidate.right)
+        )
+          throw invalidOutput();
+        const pair =
+          candidate.left < candidate.right
+            ? `${candidate.left}:${candidate.right}:${candidate.kind}`
+            : `${candidate.right}:${candidate.left}:${candidate.kind}`;
+        if (!candidates.has(pair)) candidates.set(pair, candidate);
+      }
+    }
+    const savedAggregate = {
+      version: REVIEW_PLAN_VERSION,
+      summaries: [...summaries],
+      candidates: [...candidates.values()],
+    };
+    if (
+      new TextEncoder().encode(JSON.stringify(savedAggregate)).byteLength <=
+      REPORT_LIMIT
+    )
+      await cache.put(aggregateKey, savedAggregate);
   }
   const amendments: JointAmendment[] = [];
   const conflicts: string[] = [];

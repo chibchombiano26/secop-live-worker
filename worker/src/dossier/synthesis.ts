@@ -374,6 +374,7 @@ export async function synthesizeDossier(
   options?: {
     extractionConcurrency?: number;
     jointReviewConcurrency?: number;
+    jointReviewResume?: { cursor: number; fingerprint: string };
   },
 ) {
   const { dossier, chunks } = await dossierEvidence(repo, dossierId);
@@ -458,12 +459,15 @@ export async function synthesizeDossier(
             progress.reviewGroupsTotal ?? progress.candidatesTotal ?? 0,
           );
           if (
+            progress.forceCheckpoint === true ||
             progress.phase !== previousReviewPhase ||
             completed % 20 === 0 ||
             completed === total
           ) {
             previousReviewPhase = progress.phase;
-            await checkpoint({ ...progress, stage: progress.phase });
+            const { forceCheckpoint: _forceCheckpoint, ...savedProgress } =
+              progress;
+            await checkpoint({ ...savedProgress, stage: progress.phase });
           }
         }
       : undefined,
@@ -471,6 +475,8 @@ export async function synthesizeDossier(
       concurrency: modelJointReviewConcurrency(
         options?.jointReviewConcurrency,
       ),
+      revision,
+      resume: options?.jointReviewResume,
     },
   );
   const overviews = joint.summaries;
