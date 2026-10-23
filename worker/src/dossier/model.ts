@@ -62,7 +62,9 @@ function isTransientProviderFailure(error: DossierError) {
   return (
     error.code === "MODEL_UNAVAILABLE" ||
     error.code === "MODEL_PROVIDER_HTTP_429" ||
-    /^MODEL_PROVIDER_HTTP_5\d\d$/.test(error.code)
+    /^MODEL_PROVIDER_HTTP_5\d\d$/.test(error.code) ||
+    (error.code === "MODEL_INVALID_OUTPUT" &&
+      error.diagnostic?.phase === "content_json")
   );
 }
 const providerLabels: Record<string, ModelProviderLabel> = {
@@ -691,6 +693,22 @@ export class ConfiguredModel implements ModelProvider {
           if (typeof result !== "string")
             throw invalidOutput("missing_content");
         }
+        if (!structuredResult) {
+          if (typeof result !== "string")
+            throw invalidOutput("missing_content");
+          const content = result;
+          try {
+            result = JSON.parse(
+              content
+                .trim()
+                .replace(/^```json\s*/, "")
+                .replace(/\s*```$/, ""),
+            );
+            structuredResult = true;
+          } catch {
+            throw invalidOutput("content_json", content.length);
+          }
+        }
       } catch (error) {
         const failure = providerFailure(error);
         if (
@@ -699,6 +717,7 @@ export class ConfiguredModel implements ModelProvider {
         )
           throw failure;
         if (
+          failure.code !== "MODEL_INVALID_OUTPUT" &&
           failedProviderSlug &&
           !ignoredProviderSlugs.includes(failedProviderSlug)
         )
@@ -717,17 +736,7 @@ export class ConfiguredModel implements ModelProvider {
       await this.heartbeat?.();
       break;
     }
-    if (structuredResult) return result;
-    if (typeof result !== "string") throw invalidOutput("missing_content");
-    try {
-      return JSON.parse(
-        result
-          .trim()
-          .replace(/^```json\s*/, "")
-          .replace(/\s*```$/, ""),
-      );
-    } catch {
-      throw invalidOutput("content_json", result.length);
-    }
+    if (!structuredResult) throw invalidOutput("missing_content");
+    return result;
   }
 }
