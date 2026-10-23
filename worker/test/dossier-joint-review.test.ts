@@ -24,7 +24,245 @@ function cache() {
   };
 }
 
+function unconfirmedBatch(input: any) {
+  if (input.purpose !== "joint_conflict_verification_batch") return null;
+  return {
+    results: input.context.tasks.map((task: any) => ({
+      taskId: task.taskId,
+      decision: "unconfirmed",
+      reason: `Pendiente ${task.candidate.left}:${task.candidate.right}. ${"Further source verification is required. ".repeat(35)}`,
+      citationIds: [],
+    })),
+  };
+}
+
 describe("reviewJointRequirements", () => {
+  it("batches candidate verifications while preserving every result in pair order", async () => {
+    const requirements = Array.from({ length: 10 }, (_, index) =>
+      req(`Requirement ${index}`, `doc-${index}`),
+    );
+    const candidates = requirements.flatMap((_, left) =>
+      requirements.slice(left + 1).map((_, offset) => ({
+        left,
+        right: left + offset + 1,
+        kind: "conflict" as const,
+        reason: `Candidate ${left}:${left + offset + 1}`,
+      })),
+    );
+    const verificationBatchSizes: number[] = [];
+    const verificationRequestSizes: number[] = [];
+    const store = cache();
+    const result = await reviewJointRequirements(
+      requirements,
+      {
+        id: "candidate-verification-batching",
+        generate: async (input: any) => {
+          if (input.purpose === "joint_requirement_review")
+            return { summary: "Reviewed all requirements.", candidates };
+          if (input.purpose === "joint_conflict_verification_batch") {
+            verificationBatchSizes.push(input.context.tasks.length);
+            verificationRequestSizes.push(JSON.stringify(input).length);
+            return {
+              results: input.context.tasks.map((task: any) => ({
+                taskId: task.taskId,
+                decision: "unconfirmed",
+                reason: `Pending ${task.candidate.left}:${task.candidate.right}`,
+                citationIds: [],
+              })),
+            };
+          }
+          if (input.purpose === "joint_conflict_verification")
+            return {
+              decision: "unconfirmed",
+              reason: "Pending singleton candidate.",
+              citationIds: [],
+            };
+          throw new Error(`Unexpected verification request: ${input.purpose}`);
+        },
+      },
+      {},
+      store,
+    );
+
+    expect(result.metrics.candidates).toBe(candidates.length);
+    expect(result.metrics.completedVerifications).toBe(candidates.length);
+    expect(result.candidateReviews.map(({ left, right }) => [left, right])).toEqual(
+      candidates.map(({ left, right }) => [left, right]),
+    );
+    expect(verificationBatchSizes.every((size) => size <= 4 && size > 1)).toBe(
+      true,
+    );
+    expect(verificationBatchSizes.reduce((sum, size) => sum + size, 0)).toBe(
+      candidates.length - 1,
+    );
+    expect(verificationRequestSizes.every((size) => size <= 48_000)).toBe(true);
+    expect(result.metrics.verificationRequests).toBe(verificationBatchSizes.length + 1);
+    expect(result.metrics.verificationRequests).toBeLessThan(candidates.length);
+  });
+
+  it("reuses individual verification cache hits in mixed batches and on replay", async () => {
+    const requirements = Array.from({ length: 4 }, (_, index) =>
+      req(`Requirement ${index}`, `doc-${index}`),
+    );
+    const candidates = [
+      [0, 1],
+      [0, 2],
+      [0, 3],
+      [1, 2],
+    ].map(([left, right]) => ({
+      left,
+      right,
+      kind: "conflict" as const,
+      reason: `Candidate ${left}:${right}`,
+    }));
+    const store = cache();
+    let verificationCalls = 0;
+    const model = {
+      id: "mixed-verification-cache-model",
+      generate: async (input: any) => {
+        if (input.purpose === "joint_requirement_review")
+          return { summary: "Reviewed requirements.", candidates };
+        verificationCalls++;
+        if (input.purpose === "joint_conflict_verification")
+          return {
+            decision: "unconfirmed",
+            reason: "Pending singleton candidate.",
+            citationIds: [],
+          };
+        return {
+          results: input.context.tasks.map((task: any) => ({
+            taskId: task.taskId,
+            decision: "unconfirmed",
+            reason: `Pending ${task.candidate.left}:${task.candidate.right}`,
+            citationIds: [],
+          })),
+        };
+      },
+    };
+
+    const first = await reviewJointRequirements(requirements, model, {}, store);
+    const verificationEntries = [...store.values.entries()].filter(
+      ([, value]) =>
+        typeof value === "object" &&
+        value !== null &&
+        "decision" in value &&
+        "reason" in value,
+    );
+    expect(verificationEntries).toHaveLength(candidates.length);
+    const preservedKey = verificationEntries[0][0];
+    for (const [key] of verificationEntries.slice(1)) store.values.delete(key);
+    const callsBeforeMixedRun = verificationCalls;
+
+    const mixed = await reviewJointRequirements(requirements, model, {}, store);
+
+    expect(verificationCalls - callsBeforeMixedRun).toBe(1);
+    expect(mixed.metrics.verificationRequests).toBe(1);
+    expect(mixed.candidateReviews).toEqual(first.candidateReviews);
+    expect(store.values.has(preservedKey)).toBe(true);
+    const callsAfterMixedRun = verificationCalls;
+    const replay = await reviewJointRequirements(requirements, model, {}, store);
+    expect(verificationCalls).toBe(callsAfterMixedRun);
+    expect(replay.candidateReviews).toEqual(first.candidateReviews);
+  });
+
+  it("uses task-local evidence IDs and validates citations within each candidate", async () => {
+    const requirements = [0, 1, 2].map((index) =>
+      req(`Requirement ${index}`, `doc-${index}`),
+    );
+    const candidates = [
+      { left: 0, right: 1, kind: "conflict" as const, reason: "A versus B." },
+      { left: 1, right: 2, kind: "conflict" as const, reason: "B versus C." },
+    ];
+    const result = await reviewJointRequirements(
+      requirements,
+      {
+        id: "task-local-evidence-ids",
+        generate: async (input: any) => {
+          if (input.purpose === "joint_requirement_review")
+            return { summary: "Reviewed requirements.", candidates };
+          expect(input.purpose).toBe("joint_conflict_verification_batch");
+          const evidenceIds = input.context.tasks.map((task: any) =>
+            task.evidence.map((evidence: any) => evidence.id),
+          );
+          expect(new Set(evidenceIds.flat()).size).toBe(4);
+          return {
+            results: input.context.tasks.map((task: any) => ({
+              taskId: task.taskId,
+              decision: "conflict",
+              reason: "The requirements conflict.",
+              citationIds: task.evidence.map((evidence: any) => evidence.id),
+            })),
+          };
+        },
+      },
+      {},
+      cache(),
+    );
+
+    expect(result.candidateReviews.map((review) => review.decision)).toEqual([
+      "conflict",
+      "conflict",
+    ]);
+    expect(
+      result.candidateReviews.map((review) =>
+        review.citations.map((citation) => citation.documentVersionId),
+      ),
+    ).toEqual([
+      ["doc-0", "doc-1"],
+      ["doc-1", "doc-2"],
+    ]);
+  });
+
+  it("discards incomplete batches and recursively falls back to singleton cache entries", async () => {
+    const requirements = Array.from({ length: 4 }, (_, index) =>
+      req(`Requirement ${index}`, `doc-${index}`),
+    );
+    const candidates = [
+      [0, 1],
+      [0, 2],
+      [0, 3],
+      [1, 2],
+    ].map(([left, right]) => ({
+      left,
+      right,
+      kind: "conflict" as const,
+      reason: `Candidate ${left}:${right}`,
+    }));
+    const store = cache();
+    const requestPurposes: string[] = [];
+    const model = {
+      id: "partial-verification-batch-model",
+      generate: async (input: any) => {
+        requestPurposes.push(input.purpose);
+        if (input.purpose === "joint_requirement_review")
+          return { summary: "Reviewed requirements.", candidates };
+        if (input.purpose === "joint_conflict_verification_batch")
+          return { results: [] };
+        const candidate = input.context.candidate;
+        return {
+          decision: "unconfirmed",
+          reason: `Singleton ${candidate.left}:${candidate.right}`,
+          citationIds: [],
+        };
+      },
+    };
+
+    const result = await reviewJointRequirements(requirements, model, {}, store);
+
+    expect(result.metrics.candidates).toBe(candidates.length);
+    expect(result.metrics.completedVerifications).toBe(candidates.length);
+    expect(result.candidateReviews.map(({ left, right }) => [left, right])).toEqual(
+      candidates.map(({ left, right }) => [left, right]),
+    );
+    expect(requestPurposes.filter((purpose) => purpose === "joint_conflict_verification_batch")).toHaveLength(3);
+    expect(requestPurposes.filter((purpose) => purpose === "joint_conflict_verification")).toHaveLength(4);
+    expect(result.metrics.verificationRequests).toBe(7);
+    const callsAfterFirstRun = requestPurposes.length;
+    const replay = await reviewJointRequirements(requirements, model, {}, store);
+    expect(requestPurposes).toHaveLength(callsAfterFirstRun);
+    expect(replay.candidateReviews).toEqual(result.candidateReviews);
+  });
+
   it("preserves complete aggregate reviews larger than one model response", async () => {
     const requirements = Array.from({ length: 20 }, (_, i) =>
       req(`Requirement ${i}`, `doc-${i}`),
@@ -45,6 +283,8 @@ describe("reviewJointRequirements", () => {
       id: "large-complete-review",
       generate: async (input: any) => {
         calls++;
+        const batch = unconfirmedBatch(input);
+        if (batch) return batch;
         return input.purpose === "joint_requirement_review"
           ? { summary: "Complete source comparison.", candidates }
           : {
@@ -561,12 +801,12 @@ describe("reviewJointRequirements", () => {
   });
 
   it("verifies candidates with at most eight workers and merges in candidate order", async () => {
-    const requirements = Array.from({ length: 11 }, (_, i) =>
+    const requirements = Array.from({ length: 49 }, (_, i) =>
       req(`Requisito ${i}`, `doc-${i}`),
     );
-    const candidates = Array.from({ length: 10 }, (_, i) => ({
+    const candidates = Array.from({ length: 48 }, (_, i) => ({
       left: i,
-      right: (i + 1) % requirements.length,
+      right: i + 1,
       kind: "conflict" as const,
       reason: `Propuesta ${i}`,
     }));
@@ -580,6 +820,15 @@ describe("reviewJointRequirements", () => {
       {
         id: "parallel-candidate-verification",
         generate: async (input: any) => {
+          const batch = unconfirmedBatch(input);
+          if (batch) {
+            activeVerifications++;
+            maximumVerifications = Math.max(maximumVerifications, activeVerifications);
+            if (activeReviews > 0) phaseOverlap = true;
+            await new Promise((resolve) => setTimeout(resolve, 4));
+            activeVerifications--;
+            return batch;
+          }
           if (input.purpose === "joint_requirement_review") {
             activeReviews++;
             if (activeVerifications > 0) phaseOverlap = true;
@@ -622,9 +871,61 @@ describe("reviewJointRequirements", () => {
       result.candidateReviews.map(({ left, right }) => [left, right]),
     ).toEqual(candidates.map(({ left, right }) => [left, right]));
     expect(result.candidateReviews.map(({ reason }) => reason)).toEqual(
-      candidates.map((_, index) => `Pendiente ${index}`),
+      candidates.map((candidate) =>
+        `Pendiente ${candidate.left}:${candidate.right}. ${"Further source verification is required. ".repeat(35)}`,
+      ),
     );
-    expect(progress).toEqual(Array.from({ length: 11 }, (_, index) => index));
+    expect(progress).toEqual(Array.from({ length: 49 }, (_, index) => index));
+  });
+
+  it("runs up to thirty-two verification batches concurrently without losing candidate order", async () => {
+    const requirements = Array.from({ length: 18 }, (_, index) =>
+      req(`Requirement ${index}`, `doc-${index}`),
+    );
+    const candidates = requirements.flatMap((_, left) =>
+      requirements.slice(left + 1).map((_, offset) => ({
+        left,
+        right: left + offset + 1,
+        kind: "conflict" as const,
+        reason: `Candidate ${left}:${left + offset + 1}`,
+      })),
+    );
+    let active = 0;
+    let maximumActive = 0;
+    const result = await reviewJointRequirements(
+      requirements,
+      {
+        id: "high-throughput-verification",
+        generate: async (input: any) => {
+          if (input.purpose === "joint_requirement_review")
+            return { summary: "Reviewed requirements.", candidates };
+          const batch = unconfirmedBatch(input);
+          active++;
+          maximumActive = Math.max(maximumActive, active);
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          active--;
+          return (
+            batch ?? {
+              decision: "unconfirmed",
+              reason: "Pending singleton.",
+              citationIds: [],
+            }
+          );
+        },
+      },
+      {},
+      cache(),
+      undefined,
+      { verificationConcurrency: 32 },
+    );
+
+    expect(maximumActive).toBeGreaterThanOrEqual(31);
+    expect(maximumActive).toBeLessThanOrEqual(32);
+    expect(result.metrics.candidates).toBe(candidates.length);
+    expect(result.metrics.completedVerifications).toBe(candidates.length);
+    expect(result.candidateReviews.map(({ left, right }) => [left, right])).toEqual(
+      candidates.map(({ left, right }) => [left, right]),
+    );
   });
 
   it("settles candidate verification caches after failure and reuses successes", async () => {
@@ -647,6 +948,19 @@ describe("reviewJointRequirements", () => {
       generate: async (input: any) => {
         if (input.purpose === "joint_requirement_review")
           return { summary: "Revisión completa.", candidates };
+        const batch = unconfirmedBatch(input);
+        if (batch) {
+          verificationCalls++;
+          const batchTasks = input.context.tasks;
+          if (
+            failFirstPair &&
+            batchTasks.some((task: any) => task.candidate.left === 0)
+          )
+            return { results: [] };
+          for (const task of batchTasks) successfulPairs.add(task.candidate.left);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return batch;
+        }
         const left = input.context.candidate.left as number;
         verificationCalls++;
         if (left === 0 && failFirstPair) {
@@ -667,18 +981,20 @@ describe("reviewJointRequirements", () => {
     await expect(
       reviewJointRequirements(requirements, model, {}, store),
     ).rejects.toThrow("temporary verification failure");
-    expect(verificationCalls).toBe(8);
-    expect(successfulPairs.size).toBe(7);
-    expect(store.values.size).toBe(9); // Group, aggregate and seven verifications.
+    expect(verificationCalls).toBe(5);
+    expect(successfulPairs.size).toBeGreaterThan(0);
+    expect(successfulPairs.size).toBeLessThan(candidates.length);
+    expect(store.values.size).toBeGreaterThan(successfulPairs.size);
 
     failFirstPair = false;
+    const callsBeforeResume = verificationCalls;
     const resumed = await reviewJointRequirements(
       requirements,
       model,
       {},
       store,
     );
-    expect(verificationCalls).toBe(11);
+    expect(verificationCalls - callsBeforeResume).toBe(1);
     expect(successfulPairs.size).toBe(10);
     expect(repeatedSuccessfulPairs).toEqual([]);
     expect(resumed.candidateReviews.map(({ left }) => left)).toEqual(
@@ -1136,6 +1452,8 @@ describe("reviewJointRequirements", () => {
     const model = {
       id: "splitting-review-model",
       generate: async (input: any) => {
+        const batch = unconfirmedBatch(input);
+        if (batch) return batch;
         if (input.purpose === "joint_conflict_verification") {
           return {
             decision: "unconfirmed",
@@ -1327,6 +1645,8 @@ describe("reviewJointRequirements", () => {
     const model = {
       id: "large-split-review-model",
       generate: async (input: any) => {
+        const batch = unconfirmedBatch(input);
+        if (batch) return batch;
         if (input.purpose === "joint_conflict_verification")
           return {
             decision: "unconfirmed",
@@ -1411,6 +1731,8 @@ describe("reviewJointRequirements", () => {
       const model = {
         id: `candidate-cap-${parentCandidateCount}-model`,
         generate: async (input: any) => {
+          const batch = unconfirmedBatch(input);
+          if (batch) return batch;
           if (input.purpose === "joint_conflict_verification") {
             verificationCalls++;
             return {
@@ -1466,7 +1788,7 @@ describe("reviewJointRequirements", () => {
       );
       expect(first.metrics.candidates).toBe((21 * 20) / 2);
       expect(first.metrics.completedVerifications).toBe((21 * 20) / 2);
-      expect(verificationCalls).toBe((21 * 20) / 2);
+      expect(first.metrics.verificationRequests).toBeLessThan((21 * 20) / 2);
       expect(reviewCalls).toBeGreaterThan(1);
       expect(
         [...store.values.values()].some(

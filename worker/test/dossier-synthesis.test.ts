@@ -6,6 +6,7 @@ import {
 import {
   modelExtractionConcurrency,
   modelJointReviewConcurrency,
+  modelJointVerifyConcurrency,
 } from "../src/dossier/model-concurrency";
 import type { EvidenceChunk } from "../src/dossier/extraction";
 const chunks: EvidenceChunk[] = [
@@ -223,6 +224,14 @@ describe("grounded cross-document synthesis", () => {
     expect(modelJointReviewConcurrency("64")).toBe(64);
     for (const value of ["0", "65", "fast", "2.5"])
       expect(() => modelJointReviewConcurrency(value)).toThrow(
+        "MODEL_BUDGET_UNCONFIGURED",
+      );
+  });
+  it("validates joint verification concurrency with a default of eight and cap of thirty-two", () => {
+    expect(modelJointVerifyConcurrency()).toBe(8);
+    expect(modelJointVerifyConcurrency("32")).toBe(32);
+    for (const value of ["0", "33", "fast", "2.5"])
+      expect(() => modelJointVerifyConcurrency(value)).toThrow(
         "MODEL_BUDGET_UNCONFIGURED",
       );
   });

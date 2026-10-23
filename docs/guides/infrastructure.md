@@ -64,10 +64,12 @@ OCR once. Ordinary deployments reuse Docker's layer cache too.
 
 ## State and concurrency
 
-The production owner model budget is 25,000 calls per UTC day, configured by
-`MODEL_DAILY_LIMIT` in `infra/production.json`. Each resumable segment remains
-limited to 256 calls. Raising the daily allowance preserves the current day's
-recorded consumption; never reset or delete `model-daily` accounting rows.
+The production owner model budget is 50,000 calls per UTC day, configured by
+`MODEL_DAILY_LIMIT` in `infra/production.json`. Joint verification batches up
+to four candidates per request to reduce model calls without dropping candidate
+coverage. Each resumable segment remains limited to 256 calls. Raising the
+daily allowance preserves the current day's recorded consumption; never reset
+or delete `model-daily` accounting rows.
 A large synthesis can make more than 10,000 D1 and model subrequests in one
 Workflow instance. The protected `limits.subrequests` value in
 `infra/production.json` sets the paid Workflow ceiling to 50,000; deployment

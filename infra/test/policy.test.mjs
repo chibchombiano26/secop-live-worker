@@ -11,6 +11,10 @@ import {
   workerMetadata,
 } from "../policy.mjs";
 
+test("production model daily budget supports the authorized 50,000-call ceiling", () => {
+  assert.equal(manifest.variables.MODEL_DAILY_LIMIT, "50000");
+});
+
 test("adoption permits imports but rejects creation, replacement and deletion", () => {
   assert.doesNotThrow(() =>
     assertSafePlan({

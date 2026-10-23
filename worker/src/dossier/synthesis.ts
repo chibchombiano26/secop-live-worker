@@ -10,6 +10,7 @@ import { reviewJointRequirements } from "./joint-review";
 import {
   modelExtractionConcurrency,
   modelJointReviewConcurrency,
+  modelJointVerifyConcurrency,
 } from "./model-concurrency";
 export const citationSchema = z.object({
   documentVersionId: z.string().min(1).max(200),
@@ -375,6 +376,7 @@ export async function synthesizeDossier(
     extractionConcurrency?: number;
     jointReviewConcurrency?: number;
     jointReviewResume?: { cursor: number; fingerprint: string };
+    jointVerificationConcurrency?: number;
   },
 ) {
   const { dossier, chunks } = await dossierEvidence(repo, dossierId);
@@ -477,6 +479,9 @@ export async function synthesizeDossier(
       ),
       revision,
       resume: options?.jointReviewResume,
+      verificationConcurrency: modelJointVerifyConcurrency(
+        options?.jointVerificationConcurrency,
+      ),
     },
   );
   const overviews = joint.summaries;
