@@ -22,6 +22,7 @@ import { ConfiguredModel, type ModelProvider, type ModelEnv } from "./model";
 import {
   modelExtractionConcurrency,
   modelJointReviewConcurrency,
+  modelJointVerifyConcurrency,
 } from "./model-concurrency";
 import { synthesizeDossier } from "./synthesis";
 import { assessCompany } from "./assessment";
@@ -34,6 +35,7 @@ export type ProcessingEnv = PrivateServiceEnv &
     AGENT_MODEL_NAME?: string;
     MODEL_EXTRACTION_CONCURRENCY?: string;
     MODEL_JOINT_REVIEW_CONCURRENCY?: string;
+    MODEL_JOINT_VERIFY_CONCURRENCY?: string;
     SECOP_OCR?: OcrServiceBinding;
     EXTRACTOR_URL?: string;
     EXTRACTOR_KEY?: string;
@@ -226,6 +228,9 @@ export async function executeProcessingJob(
                 },
               }
             : {}),
+          jointVerificationConcurrency: modelJointVerifyConcurrency(
+            env.MODEL_JOINT_VERIFY_CONCURRENCY,
+          ),
         },
       );
       await checkpoint({

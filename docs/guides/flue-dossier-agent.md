@@ -205,9 +205,14 @@ The joint comparison plan runs at most eight independent calls concurrently by
 default. `MODEL_JOINT_REVIEW_CONCURRENCY` can raise this to at most 64; production
 uses 64 for higher throughput. At the observed model latency this remains
 below Workers AI's documented 300 requests per minute default; the account-wide
-rate limit still applies. Candidate evidence verification remains capped at
-eight concurrent calls. Changing review concurrency does not change the planned
-requirement pairs, candidates, cache keys, or result ordering. The plan retains
+rate limit still applies. Candidate evidence verification groups up to four
+uncached candidates into one bounded request, while retaining each candidate's
+existing cache key and validation rules. Invalid, incomplete, truncated, or
+oversized batches are discarded and recursively split down to the existing
+single-candidate path. `MODEL_JOINT_VERIFY_CONCURRENCY` controls concurrent
+verification requests from 1 to 32; it defaults to eight and production uses
+32. Changing either concurrency limit does not change the planned requirement
+pairs, candidates, cache keys, or result ordering. The plan retains
 every planned requirement pair, and verification retains every candidate.
 Completed group and verification results are cached before progress is
 acknowledged. On failure, no more work is scheduled and all in-flight work settles

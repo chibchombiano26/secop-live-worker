@@ -1,8 +1,11 @@
 import { z } from "zod/v4";
 import { DossierError } from "./contracts";
 import { sha256 } from "./downloads";
-import { modelJointReviewConcurrency } from "./model-concurrency";
-import type { ModelProvider } from "./model";
+import {
+  modelJointReviewConcurrency,
+  modelJointVerifyConcurrency,
+} from "./model-concurrency";
+import type { ModelInput, ModelProvider } from "./model";
 import type { Citation, Requirement } from "./synthesis";
 
 const REQUEST_LIMIT = 48_000;
@@ -77,6 +80,17 @@ type Candidate = {
   kind: "conflict" | "amendment";
   reason: string;
 };
+type VerificationValue = z.infer<ReturnType<typeof verificationSchemaForIds>>;
+type VerificationTask = {
+  index: number;
+  taskId: string;
+  candidate: Candidate;
+  input: ModelInput;
+  inputChars: number;
+  key: string;
+  citationMap: Map<string, { side: number; citation: Citation }>;
+  schema: ReturnType<typeof verificationSchemaForIds>;
+};
 type CandidateScopes = { left: number[]; right: number[] };
 type Group = {
   indices: number[];
@@ -96,6 +110,13 @@ type CompactRequirement = [
 
 function invalidOutput(): DossierError {
   return new DossierError("MODEL_INVALID_OUTPUT", 502, true);
+}
+function splitVerificationBatch(error: unknown) {
+  return (
+    error instanceof DossierError &&
+    (error.code === "MODEL_INVALID_OUTPUT" ||
+      error.code === "MODEL_OUTPUT_TRUNCATED")
+  );
 }
 function candidateCapExceeded(error: z.ZodError) {
   return error.issues.some(
@@ -430,9 +451,13 @@ export async function reviewJointRequirements(
     concurrency?: number;
     revision?: number;
     resume?: { cursor: number; fingerprint: string };
+    verificationConcurrency?: number;
   },
 ): Promise<JointReviewResult> {
   const reviewConcurrency = modelJointReviewConcurrency(options?.concurrency);
+  const verificationConcurrency = modelJointVerifyConcurrency(
+    options?.verificationConcurrency,
+  );
   const index = sourceIndex(requirements);
   const plan = makeGroups(requirements, index, coverage);
   const resumePlan = {
@@ -832,7 +857,7 @@ export async function reviewJointRequirements(
   const reviewCandidates = [...candidates.values()];
   const verificationResults: Array<{
     candidate: Candidate;
-    verified: z.infer<ReturnType<typeof verificationSchemaForIds>>;
+    verified: VerificationValue;
     citations: Citation[];
   }> = new Array(reviewCandidates.length);
   let verificationCompleted = 0;
@@ -842,7 +867,9 @@ export async function reviewJointRequirements(
     candidatesCompleted: 0,
     candidatesTotal: reviewCandidates.length,
   });
-  async function verifyCandidate(index: number) {
+  const verificationInstructions =
+    "Return {decision:'conflict'|'amendment'|'unconfirmed',reason:string,citationIds:string[],previous?:number,replacement?:number,changeExcerpt?:string}. For an amendment, changeExcerpt must copy a contiguous passage from the replacement source that explicitly modifies or replaces the prior term. Without that passage return unconfirmed. Verify the proposed relationship using only the two original requirement wordings and their exact quoted evidence. Cite valid supplied evidence IDs from BOTH requirements for any confirmed conflict or amendment. A conflict means the two obligations are mutually incompatible for the same scope and period. Repeated obligations, a longer wording, extra detail, or compatible general and specific terms are NOT conflicts. An amendment requires an explicit source statement replacing, correcting or modifying an identified earlier term. Two different evaluation criteria or a condition described elsewhere are NOT evidence of an amendment by themselves. Do not infer an amendment from later chronology; the text must explicitly change a prior term. If evidence does not establish the relationship, return unconfirmed. For an amendment, previous and replacement must be the original global requirement indices and the text must explicitly establish that direction. Never invent quotations, IDs or facts.";
+  async function buildVerificationTask(index: number): Promise<VerificationTask> {
     const candidate = reviewCandidates[index];
     const left = requirements[candidate.left];
     const right = requirements[candidate.right];
@@ -879,7 +906,10 @@ export async function reviewJointRequirements(
         });
       }
     }
-    const verificationInput = {
+    const verificationSchema = verificationSchemaForIds([
+      ...citationMap.keys(),
+    ]);
+    const verificationInput: ModelInput = {
       purpose: "joint_conflict_verification",
       evidence,
       context: {
@@ -909,49 +939,37 @@ export async function reviewJointRequirements(
           },
         ],
       },
-      instructions:
-        "Return {decision:'conflict'|'amendment'|'unconfirmed',reason:string,citationIds:string[],previous?:number,replacement?:number,changeExcerpt?:string}. For an amendment, changeExcerpt must copy a contiguous passage from the replacement source that explicitly modifies or replaces the prior term. Without that passage return unconfirmed. Verify the proposed relationship using only the two original requirement wordings and their exact quoted evidence. Cite valid supplied evidence IDs from BOTH requirements for any confirmed conflict or amendment. A conflict means the two obligations are mutually incompatible for the same scope and period. Repeated obligations, a longer wording, extra detail, or compatible general and specific terms are NOT conflicts. An amendment requires an explicit source statement replacing, correcting or modifying an identified earlier term. Two different evaluation criteria or a condition described elsewhere are NOT evidence of an amendment by themselves. Do not infer an amendment from later chronology; the text must explicitly change a prior term. If evidence does not establish the relationship, return unconfirmed. For an amendment, previous and replacement must be the original global requirement indices and the text must explicitly establish that direction. Never invent quotations, IDs or facts.",
-      outputSchema: z.toJSONSchema(
-        verificationSchemaForIds([...citationMap.keys()]),
-      ),
+      instructions: verificationInstructions,
+      outputSchema: z.toJSONSchema(verificationSchema),
     };
-    const verificationInputChars = requestChars(verificationInput);
     const key = await sha256(
       `joint-verify:v1:${model.id}:${JSON.stringify(verificationInput)}`,
     );
-    const cached = await cache.get(key);
-    const verificationSchema = verificationSchemaForIds([
-      ...citationMap.keys(),
-    ]);
-    let verified: z.infer<typeof verificationSchema>;
-    if (cached !== null) {
-      try {
-        verified = verificationSchema.parse(cached);
-      } catch {
-        throw invalidOutput();
-      }
-    } else if (verificationInputChars > REQUEST_LIMIT) {
-      verified = verificationSchema.parse({
-        decision: "unconfirmed",
-        reason:
-          "La evidencia citada excede el límite de contexto para verificación; se conserva como no confirmada.",
-        citationIds: [],
-      });
-    } else {
-      checkRequest(verificationInput);
-      maxRequestChars = Math.max(maxRequestChars, verificationInputChars);
-      const raw = await model.generate(verificationInput);
-      try {
-        verified = verificationSchema.parse(raw);
-      } catch {
-        throw invalidOutput();
-      }
-      verificationRequests++;
+    return {
+      index,
+      taskId: `candidate-${index}`,
+      candidate,
+      input: verificationInput,
+      inputChars: requestChars(verificationInput),
+      key,
+      citationMap,
+      schema: verificationSchema,
+    };
+  }
+  function validateVerification(
+    task: VerificationTask,
+    value: unknown,
+  ): { candidate: Candidate; verified: VerificationValue; citations: Citation[] } {
+    let verified: VerificationValue;
+    try {
+      verified = task.schema.parse(value) as VerificationValue;
+    } catch {
+      throw invalidOutput();
     }
     const citations: Citation[] = [];
     let sides = new Set<number>();
     for (const id of verified.citationIds) {
-      const found = citationMap.get(id);
+      const found = task.citationMap.get(id);
       if (!found) throw invalidOutput();
       sides.add(found.side);
       citations.push(found.citation);
@@ -988,12 +1006,19 @@ export async function reviewJointRequirements(
       (verified.previous === undefined ||
         verified.replacement === undefined ||
         verified.previous === verified.replacement ||
-        ![candidate.left, candidate.right].includes(verified.previous) ||
-        ![candidate.left, candidate.right].includes(verified.replacement))
+        ![task.candidate.left, task.candidate.right].includes(verified.previous) ||
+        ![task.candidate.left, task.candidate.right].includes(verified.replacement))
     )
       throw invalidOutput();
-    if (cached === null) await cache.put(key, verified);
-    verificationResults[index] = { candidate, verified, citations };
+    return { candidate: task.candidate, verified, citations };
+  }
+  async function completeVerification(
+    task: VerificationTask,
+    value: { candidate: Candidate; verified: VerificationValue; citations: Citation[] },
+    cacheMiss: boolean,
+  ) {
+    if (cacheMiss) await cache.put(task.key, value.verified);
+    verificationResults[task.index] = value;
     const count = ++verificationCompleted;
     verificationProgressWrites = verificationProgressWrites.then(async () => {
       await checkpoint?.({
@@ -1004,14 +1029,173 @@ export async function reviewJointRequirements(
     });
     await verificationProgressWrites;
   }
+  async function verifySingleton(task: VerificationTask) {
+    checkRequest(task.input);
+    maxRequestChars = Math.max(maxRequestChars, task.inputChars);
+    verificationRequests++;
+    const raw = await model.generate(task.input);
+    const value = validateVerification(task, raw);
+    await completeVerification(task, value, true);
+  }
+  function batchVerificationInput(tasks: VerificationTask[]) {
+    const taskIds = tasks.map((task) => task.taskId);
+    const batchCitationMappings = new Map<string, Map<string, string>>();
+    const citationIds = [
+      ...tasks.flatMap((task) => {
+        const mapping = new Map<string, string>();
+        batchCitationMappings.set(task.taskId, mapping);
+        const originalIds = [...task.citationMap.keys()];
+        return task.input.evidence.map((_evidence, evidenceIndex) => {
+          const batchId = `${task.taskId}-e${evidenceIndex}`;
+          mapping.set(batchId, originalIds[evidenceIndex]);
+          return batchId;
+        });
+      }),
+    ];
+    const itemSchema = z.object({
+      taskId: z.enum(taskIds as [string, ...string[]]),
+      decision: z.enum(["conflict", "amendment", "unconfirmed"]),
+      reason: z.string().min(1).max(1_500),
+      citationIds: z.array(z.enum(citationIds as [string, ...string[]])).max(20),
+      changeExcerpt: z.string().min(1).max(4_000).optional(),
+      previous: z.number().int().nonnegative().optional(),
+      replacement: z.number().int().nonnegative().optional(),
+    });
+    const batchSchema = z.object({
+      results: z.array(itemSchema).length(tasks.length),
+    });
+    const batchInput: ModelInput = {
+      purpose: "joint_conflict_verification_batch",
+      evidence: [],
+      context: {
+        tasks: tasks.map((task) => {
+          const context = task.input.context as {
+            candidate: unknown;
+            requirements: unknown;
+          };
+          return {
+            taskId: task.taskId,
+            evidence: task.input.evidence.map((evidence, evidenceIndex) => ({
+              ...evidence,
+              id: `${task.taskId}-e${evidenceIndex}`,
+            })),
+            candidate: context.candidate,
+            requirements: context.requirements,
+          };
+        }),
+      },
+      instructions:
+        `Verify every task independently and return exactly one result for each taskId. Evidence IDs are local to their task; cite only that task's supplied IDs from both requirements for a confirmed result. Do not combine facts or citations between tasks. ${verificationInstructions}`,
+      outputSchema: z.toJSONSchema(batchSchema),
+    };
+    return { input: batchInput, schema: batchSchema, batchCitationMappings };
+  }
+  async function verifyBatch(tasks: VerificationTask[]) {
+    if (tasks.length === 1) {
+      await verifySingleton(tasks[0]);
+      return;
+    }
+    const { input, schema, batchCitationMappings } = batchVerificationInput(tasks);
+    const batchChars = requestChars(input);
+    if (batchChars > REQUEST_LIMIT) {
+      const middle = Math.ceil(tasks.length / 2);
+      await verifyBatch(tasks.slice(0, middle));
+      await verifyBatch(tasks.slice(middle));
+      return;
+    }
+    checkRequest(input);
+    maxRequestChars = Math.max(maxRequestChars, batchChars);
+    verificationRequests++;
+    let raw: unknown;
+    try {
+      raw = await model.generate(input);
+    } catch (error) {
+      if (!splitVerificationBatch(error)) throw error;
+      const middle = Math.ceil(tasks.length / 2);
+      await verifyBatch(tasks.slice(0, middle));
+      await verifyBatch(tasks.slice(middle));
+      return;
+    }
+    let validated: Array<{
+      task: VerificationTask;
+      value: { candidate: Candidate; verified: VerificationValue; citations: Citation[] };
+    }>;
+    try {
+      const parsed = schema.parse(raw);
+      const byTaskId = new Map(parsed.results.map((result) => [result.taskId, result]));
+      if (
+        byTaskId.size !== tasks.length ||
+        tasks.some((task) => !byTaskId.has(task.taskId))
+      )
+        throw invalidOutput();
+      validated = tasks.map((task) => {
+        const result = byTaskId.get(task.taskId);
+        if (!result) throw invalidOutput();
+        const { taskId: _taskId, ...candidateResult } = result;
+        const citationMapping = batchCitationMappings.get(task.taskId);
+        if (!citationMapping) throw invalidOutput();
+        candidateResult.citationIds = candidateResult.citationIds.map(
+          (batchId) => {
+            const originalId = citationMapping.get(batchId);
+            if (!originalId) throw invalidOutput();
+            return originalId;
+          },
+        );
+        return {
+          task,
+          value: validateVerification(task, candidateResult),
+        };
+      });
+    } catch (error) {
+      if (!(error instanceof z.ZodError) && !splitVerificationBatch(error))
+        throw error;
+      const middle = Math.ceil(tasks.length / 2);
+      await verifyBatch(tasks.slice(0, middle));
+      await verifyBatch(tasks.slice(middle));
+      return;
+    }
+    for (const { task, value } of validated)
+      await completeVerification(task, value, true);
+  }
+  async function processCandidates(indices: number[]) {
+    const tasks = await Promise.all(indices.map(buildVerificationTask));
+    const cachedValues = await Promise.all(tasks.map((task) => cache.get(task.key)));
+    const missing: VerificationTask[] = [];
+    for (let taskIndex = 0; taskIndex < tasks.length; taskIndex++) {
+      const task = tasks[taskIndex];
+      const cached = cachedValues[taskIndex];
+      if (cached !== null) {
+        await completeVerification(
+          task,
+          validateVerification(task, cached),
+          false,
+        );
+      } else if (task.inputChars > REQUEST_LIMIT) {
+        const value = validateVerification(task, {
+          decision: "unconfirmed",
+          reason:
+            "La evidencia citada excede el límite de contexto para verificación; se conserva como no confirmada.",
+          citationIds: [],
+        });
+        await completeVerification(task, value, true);
+      } else {
+        missing.push(task);
+      }
+    }
+    for (let offset = 0; offset < missing.length; offset += 4) {
+      await verifyBatch(missing.slice(offset, offset + 4));
+    }
+  }
   let nextCandidate = 0;
   let verificationFailed = false;
   let verificationFailure: unknown;
   async function visitCandidates() {
     while (!verificationFailed && nextCandidate < reviewCandidates.length) {
-      const index = nextCandidate++;
+      const indices: number[] = [];
+      while (indices.length < 4 && nextCandidate < reviewCandidates.length)
+        indices.push(nextCandidate++);
       try {
-        await verifyCandidate(index);
+        await processCandidates(indices);
       } catch (error) {
         if (!verificationFailed) {
           verificationFailed = true;
@@ -1024,7 +1208,12 @@ export async function reviewJointRequirements(
   // result arrays are filled by index so completion timing cannot reorder them.
   await Promise.all(
     Array.from(
-      { length: Math.min(8, reviewCandidates.length) },
+      {
+        length: Math.min(
+          verificationConcurrency,
+          Math.ceil(reviewCandidates.length / 4),
+        ),
+      },
       visitCandidates,
     ),
   );
