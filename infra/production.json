@@ -86,7 +86,7 @@
     "MODEL_PROVIDER_SORT": "throughput",
     "MODEL_MAX_PRICE_PROMPT": "0.15",
     "MODEL_MAX_PRICE_COMPLETION": "0.75",
-    "MODEL_MAX_CALLS": "256",
+    "MODEL_MAX_CALLS": "512",
     "MODEL_MAX_INPUT_CHARS": "50000",
     "MODEL_NAME": "openai/gpt-oss-120b",
     "MODEL_TRANSPORT": "workers_ai",

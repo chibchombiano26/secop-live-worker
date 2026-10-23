@@ -67,7 +67,8 @@ OCR once. Ordinary deployments reuse Docker's layer cache too.
 The production owner model budget is 50,000 calls per UTC day, configured by
 `MODEL_DAILY_LIMIT` in `infra/production.json`. Joint verification batches up
 to four candidates per request to reduce model calls without dropping candidate
-coverage. Each resumable segment remains limited to 256 calls. Raising the
+coverage. Each resumable segment remains limited to 512 calls or ten minutes,
+whichever comes first. Raising the
 daily allowance preserves the current day's recorded consumption; never reset
 or delete `model-daily` accounting rows.
 A large synthesis can make more than 10,000 D1 and model subrequests in one
