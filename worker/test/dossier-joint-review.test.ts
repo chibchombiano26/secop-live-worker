@@ -943,6 +943,7 @@ describe("reviewJointRequirements", () => {
     const repeatedSuccessfulPairs: number[] = [];
     let failFirstPair = true;
     let verificationCalls = 0;
+    const verificationProgress: number[] = [];
     const model = {
       id: "parallel-verification-resume",
       generate: async (input: any) => {
@@ -979,12 +980,22 @@ describe("reviewJointRequirements", () => {
     };
 
     await expect(
-      reviewJointRequirements(requirements, model, {}, store),
+      reviewJointRequirements(
+        requirements,
+        model,
+        {},
+        store,
+        async (progress) => {
+          if (progress.phase === "joint_verification")
+            verificationProgress.push(progress.candidatesCompleted as number);
+        },
+      ),
     ).rejects.toThrow("temporary verification failure");
     expect(verificationCalls).toBe(5);
     expect(successfulPairs.size).toBeGreaterThan(0);
     expect(successfulPairs.size).toBeLessThan(candidates.length);
     expect(store.values.size).toBeGreaterThan(successfulPairs.size);
+    expect(verificationProgress).toEqual([0]);
 
     failFirstPair = false;
     const callsBeforeResume = verificationCalls;
@@ -1000,6 +1011,175 @@ describe("reviewJointRequirements", () => {
     expect(resumed.candidateReviews.map(({ left }) => left)).toEqual(
       candidates.map(({ left }) => left),
     );
+  });
+
+  it("resumes candidate verification from a fingerprinted contiguous prefix", async () => {
+    const requirements = Array.from({ length: 7 }, (_, i) =>
+      req(`Requirement ${i}`, `doc-${i}`),
+    );
+    const store = cache();
+    const cacheReads: string[] = [];
+    const cachedStore = {
+      get: async (key: string) => {
+        cacheReads.push(key);
+        return store.get(key);
+      },
+      put: store.put,
+    };
+    const candidates = requirements.flatMap((_, left) =>
+      requirements.slice(left + 1).map((_, offset) => ({
+        left,
+        right: left + offset + 1,
+        kind: "conflict" as const,
+        reason: `Potential conflict ${left}:${left + offset + 1}`,
+      })),
+    );
+    const savedProgress: Record<string, unknown> = {};
+    const checkpoint = async (progress: Record<string, unknown>) => {
+      Object.assign(savedProgress, progress);
+    };
+    let failOnLastCandidate = true;
+    const model = {
+      id: "verification-prefix-resume",
+      generate: async (input: any) => {
+        if (input.purpose === "joint_requirement_review")
+          return { summary: "Complete joint review", candidates };
+        const tasks = input.context.tasks as
+          | Array<{ taskId: string; evidence: Array<{ id: string }> }>
+          | undefined;
+        const isLastCandidate = tasks
+          ? tasks.some((task) => task.taskId === "candidate-20")
+          : input.context.candidate.left === 5 &&
+            input.context.candidate.right === 6;
+        if (failOnLastCandidate && isLastCandidate)
+          throw new DossierError("MODEL_BUDGET_EXCEEDED", 429, true);
+        if (input.purpose === "joint_conflict_verification")
+          return {
+            decision: "conflict",
+            reason: `Evidence comparison ${input.context.candidate.left}:${input.context.candidate.right}`,
+            citationIds: input.outputSchema.properties.citationIds.items.enum,
+          };
+        return {
+          results: tasks!.map((task) => ({
+            taskId: task.taskId,
+            decision: "conflict",
+            reason: `Evidence comparison ${task.taskId}`,
+            citationIds: task.evidence.map((evidence: any) => evidence.id),
+          })),
+        };
+      },
+    };
+
+    await expect(
+      reviewJointRequirements(
+        requirements,
+        model,
+        {},
+        cachedStore,
+        checkpoint,
+        { revision: 9, concurrency: 2 },
+      ),
+    ).rejects.toMatchObject({ code: "MODEL_BUDGET_EXCEEDED" });
+    expect(savedProgress.candidatesCompleted).toBe(20);
+    const cachedVerificationKeys = new Set(
+      [...store.values.entries()]
+        .filter(
+          ([, value]) =>
+            typeof value === "object" && value !== null && "decision" in value,
+        )
+        .map(([key]) => key),
+    );
+    expect(cachedVerificationKeys.size).toBe(20);
+
+    cacheReads.length = 0;
+    await expect(
+      reviewJointRequirements(
+        requirements,
+        model,
+        {},
+        cachedStore,
+        checkpoint,
+        {
+          revision: 9,
+          concurrency: 2,
+          resumeVerification: {
+            cursor: Number(savedProgress.candidatesCompleted),
+            fingerprint: String(savedProgress.verificationFingerprint),
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ code: "MODEL_BUDGET_EXCEEDED" });
+    expect(
+      cacheReads.some((key) => cachedVerificationKeys.has(key)),
+    ).toBe(false);
+
+    cacheReads.length = 0;
+    failOnLastCandidate = false;
+    const resumed = await reviewJointRequirements(
+      requirements,
+      model,
+      {},
+      cachedStore,
+      checkpoint,
+      {
+        revision: 9,
+        concurrency: 2,
+        resumeVerification: {
+          cursor: Number(savedProgress.candidatesCompleted),
+          fingerprint: String(savedProgress.verificationFingerprint),
+        },
+      },
+    );
+    const baseline = await reviewJointRequirements(
+      requirements,
+      model,
+      {},
+      cache(),
+      undefined,
+      { revision: 9, concurrency: 2 },
+    );
+    expect(resumed.summaries).toEqual(baseline.summaries);
+    expect(resumed.candidateReviews).toEqual(baseline.candidateReviews);
+    expect(resumed.candidateReviews).toHaveLength(21);
+    expect(resumed.candidateReviews[0].citations).toEqual([
+      requirements[0].citations[0],
+      requirements[1].citations[0],
+    ]);
+    const allVerificationKeys = new Set(
+      [...store.values.entries()]
+        .filter(
+          ([, value]) =>
+            typeof value === "object" && value !== null && "decision" in value,
+        )
+        .map(([key]) => key),
+    );
+    expect(
+      cacheReads.filter((key) => allVerificationKeys.has(key)).length,
+    ).toBe(21);
+
+    const mismatchedProgress: Record<string, unknown>[] = [];
+    await reviewJointRequirements(
+      requirements,
+      model,
+      {},
+      cachedStore,
+      async (progress) => {
+        if (progress.phase === "joint_verification")
+          mismatchedProgress.push(progress);
+      },
+      {
+        revision: 9,
+        resumeVerification: {
+          cursor: 21,
+          fingerprint: "stale-verification-fingerprint",
+        },
+      },
+    );
+    expect(mismatchedProgress[0]).toMatchObject({
+      candidatesCompleted: 0,
+      candidatesTotal: 21,
+      verificationFingerprint: expect.any(String),
+    });
   });
 
   it("resumes cached completed review groups without repeating model calls", async () => {
@@ -1894,11 +2074,14 @@ describe("reviewJointRequirements", () => {
     expect(first.metrics.completedVerifications).toBe(1);
     expect(first.metrics.verificationRequests).toBe(0);
     expect(verificationCalls).toBe(0);
-    expect(checkpoints).toContainEqual({
-      phase: "joint_verification",
-      candidatesCompleted: 1,
-      candidatesTotal: 1,
-    });
+    expect(checkpoints).toContainEqual(
+      expect.objectContaining({
+        phase: "joint_verification",
+        candidatesCompleted: 1,
+        candidatesTotal: 1,
+        verificationFingerprint: expect.any(String),
+      }),
+    );
 
     const replay = await reviewJointRequirements(
       requirements,

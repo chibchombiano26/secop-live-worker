@@ -69,6 +69,10 @@ advance the cursor past a gap. Once the stage completes, it caches the ordered
 summaries and deduplicated candidate list so later verification continuations
 can reuse them without reopening every group cache entry. Bump the review-plan
 version when its prompt, grouping rules or aggregate shape changes.
+Candidate verification checkpoints a contiguous prefix against a fingerprint of
+the review plan, model and ordered candidate pairs. A resumed verification skips
+that completed prefix; after the remaining candidates finish, the worker reloads
+the saved prefix in bounded parallel batches for deterministic final assembly.
 If a proposed candidate's original quoted evidence still exceeds the model
 context bound, the candidate is saved as unconfirmed with a deterministic
 reason, counted as completed, and checkpointed. The worker does not shorten or

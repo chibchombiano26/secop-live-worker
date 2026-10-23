@@ -205,6 +205,8 @@ export async function executeProcessingJob(
       const provider = model();
       const reviewCursor = job.progress.reviewGroupsCursor;
       const reviewFingerprint = job.progress.reviewGroupsFingerprint;
+      const verificationCursor = job.progress.candidatesCompleted;
+      const verificationFingerprint = job.progress.verificationFingerprint;
       await checkpoint({ stage: "analyzing_documents", model: provider.id });
       const result = await synthesizeDossier(
         repo,
@@ -231,6 +233,15 @@ export async function executeProcessingJob(
           jointVerificationConcurrency: modelJointVerifyConcurrency(
             env.MODEL_JOINT_VERIFY_CONCURRENCY,
           ),
+          ...(Number.isSafeInteger(verificationCursor) &&
+          typeof verificationFingerprint === "string"
+            ? {
+                jointVerificationResume: {
+                  cursor: verificationCursor as number,
+                  fingerprint: verificationFingerprint,
+                },
+              }
+            : {}),
         },
       );
       await checkpoint({
