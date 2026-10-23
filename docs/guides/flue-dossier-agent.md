@@ -62,6 +62,13 @@ Each joint-review group includes only its referenced document/source tables,
 with local source indices and unchanged global requirement indices. This keeps
 large source catalogs within the request bound without dropping compared pairs.
 Review cache version 3 separates these payloads from previous global tables.
+Joint review checkpoints a contiguous completed-group cursor scoped to the
+corpus revision, model and review-plan fingerprint. A resumed run skips that
+durable prefix while uncached groups remain; out-of-order completions cannot
+advance the cursor past a gap. Once the stage completes, it caches the ordered
+summaries and deduplicated candidate list so later verification continuations
+can reuse them without reopening every group cache entry. Bump the review-plan
+version when its prompt, grouping rules or aggregate shape changes.
 If a proposed candidate's original quoted evidence still exceeds the model
 context bound, the candidate is saved as unconfirmed with a deterministic
 reason, counted as completed, and checkpointed. The worker does not shorten or
