@@ -778,9 +778,21 @@ export async function reviewJointRequirements(
   // Resume skips the durable prefix while work is still incomplete. Once all
   // remaining groups finish, reload that prefix once to preserve the
   // original ordered aggregate of summaries and candidates.
-  if (aggregate === null)
-    for (let groupIndex = 0; groupIndex < resumeCursor; groupIndex++)
-      results[groupIndex] = await loadGroupResult(groupIndex);
+  if (aggregate === null) {
+    let nextPrefixGroup = 0;
+    async function visitCachedPrefix() {
+      while (nextPrefixGroup < resumeCursor) {
+        const groupIndex = nextPrefixGroup++;
+        results[groupIndex] = await loadGroupResult(groupIndex);
+      }
+    }
+    await Promise.all(
+      Array.from(
+        { length: Math.min(reviewConcurrency, resumeCursor) },
+        visitCachedPrefix,
+      ),
+    );
+  }
   if (aggregate === null) {
     for (let groupIndex = 0; groupIndex < plan.groups.length; groupIndex++) {
       const group = plan.groups[groupIndex];

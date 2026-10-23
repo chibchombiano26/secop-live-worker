@@ -901,6 +901,68 @@ describe("reviewJointRequirements", () => {
     expect(events.some((event) => event.startsWith("review:"))).toBe(false);
   });
 
+  it("reloads a large cached prefix with bounded parallel cache reads", async () => {
+    const requirements = Array.from({ length: 16 }, (_, i) =>
+      req(`Requirement ${i}: ${"x".repeat(5_000)}`, `doc-${i}`),
+    );
+    const rows = new Map<string, unknown>();
+    let activeReads = 0;
+    let maxActiveReads = 0;
+    const store = {
+      get: async (key: string) => {
+        activeReads++;
+        maxActiveReads = Math.max(maxActiveReads, activeReads);
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        activeReads--;
+        return rows.get(key) ?? null;
+      },
+      put: async (key: string, value: unknown) => void rows.set(key, value),
+    };
+    const model = {
+      id: "bounded-prefix-cache-reload",
+      generate: async () => ({ summary: "Complete group", candidates: [] }),
+    };
+    let savedProgress: Record<string, unknown> = {};
+    const checkpoint = async (progress: Record<string, unknown>) => {
+      savedProgress = { ...savedProgress, ...progress };
+    };
+
+    const result = await reviewJointRequirements(
+      requirements,
+      model,
+      {},
+      store,
+      checkpoint,
+      { revision: 1, concurrency: 64 },
+    );
+    const groupCount = result.metrics.reviewGroups;
+    expect(groupCount).toBeGreaterThanOrEqual(10);
+
+    const fingerprint = String(savedProgress.reviewGroupsFingerprint);
+    rows.delete(`joint.aggregate.v1.${fingerprint}`);
+    maxActiveReads = 0;
+    const replay = await reviewJointRequirements(
+      requirements,
+      model,
+      {},
+      store,
+      checkpoint,
+      {
+        revision: 1,
+        concurrency: 64,
+        resume: {
+          cursor: groupCount,
+          fingerprint,
+        },
+      },
+    );
+
+    expect(replay.summaries).toEqual(result.summaries);
+    expect(replay.candidateReviews).toEqual(result.candidateReviews);
+    expect(maxActiveReads).toBeGreaterThan(1);
+    expect(maxActiveReads).toBeLessThanOrEqual(64);
+  });
+
   it.each([
     {
       change: "model",
